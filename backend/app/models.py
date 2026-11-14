@@ -29,6 +29,12 @@ class Product(Base):
     category: Mapped[str] = mapped_column(String(50))
     color: Mapped[str] = mapped_column(String(30), default="violet")
 
+    source_kind: Mapped[str] = mapped_column(String(20), default="demo")
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    icon: Mapped[str] = mapped_column(String(30), default="package")
+    price_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
 
 class PriceObservation(Base):
     __tablename__ = "price_observations"
