@@ -28,6 +28,8 @@ class Product(Base):
     stock: Mapped[int] = mapped_column(Integer, default=20)
     category: Mapped[str] = mapped_column(String(50))
     color: Mapped[str] = mapped_column(String(30), default="violet")
+    # Seller/listing text is untrusted data. The trap product stores bait here on purpose.
+    description: Mapped[str] = mapped_column(Text, default="")
 
 
 class PriceObservation(Base):
@@ -51,7 +53,19 @@ class Permission(Base):
     quantity: Mapped[int] = mapped_column(Integer, default=1)
     max_total_cents: Mapped[int] = mapped_column(Integer)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # ask_first (default): notify when the price matches; auto_buy: worker may purchase.
+    purchase_mode: Mapped[str] = mapped_column(String(20), default="ask_first")
     status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class VirtualCard(Base):
+    """One single-use card per permission. Limit equals the approved all-in maximum."""
+    __tablename__ = "virtual_cards"
+    permission_id: Mapped[str] = mapped_column(ForeignKey("permissions.id"), primary_key=True)
+    last4: Mapped[str] = mapped_column(String(4))
+    limit_cents: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="issued")  # issued | spent | voided
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

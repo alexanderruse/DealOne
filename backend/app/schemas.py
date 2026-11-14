@@ -14,6 +14,11 @@ class Rules(StrictModel):
     quantity: Literal[1] = 1
 
 
+class ActivateRequest(StrictModel):
+    # Default is ask-first: activation watches, it does not auto-buy.
+    purchase_mode: Literal["ask_first", "auto_buy"] = "ask_first"
+
+
 class ParseRequest(StrictModel):
     text: str = Field(min_length=5, max_length=2000)
 

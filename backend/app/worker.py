@@ -35,8 +35,16 @@ def scan():
                     permission.status = "expired"
                     notify(db, permission.owner, f"expired:{permission.id}", "Your purchase permission expired without a purchase.")
                     continue
-                if total(db.get(Product, permission.product_id)) <= permission.max_total_cents:
+                product = db.get(Product, permission.product_id)
+                if total(product) > permission.max_total_cents:
+                    continue
+                if permission.purchase_mode == "auto_buy":
                     prepare_order(db, permission.id)
+                else:
+                    # Ask-first: alert once; never purchase until the user explicitly approves.
+                    notify(db, permission.owner, f"offer:{permission.id}",
+                           f"Price matched your rules: {product.name} is ${total(product)/100:.2f} all in. "
+                           "Approve the purchase when you are ready.")
         except PurchaseRejected as exc:
             event("purchase_not_eligible", permission_id=permission_id, reason=str(exc))
 

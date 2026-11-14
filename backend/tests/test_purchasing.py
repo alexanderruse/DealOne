@@ -4,7 +4,7 @@ from unittest.mock import Mock
 import pytest
 from sqlalchemy import select, func, text
 from app.models import Product, Permission, Order, MerchantOrder, PaymentAuthorization, Notification, utcnow
-from app.services import prepare_order, complete_order, validate_purchase, total, PurchaseRejected
+from app.services import prepare_order, complete_order, validate_purchase, total, PurchaseRejected, issue_card
 from app.config import settings
 
 
@@ -12,10 +12,13 @@ def permission(db, **changes):
     p = db.get(Product, "headphones")
     values = dict(owner="owner", product_id=p.id, variant=p.variant, seller=p.seller,
                   condition=p.condition, currency=p.currency, quantity=1, max_total_cents=25000,
-                  expires_at=utcnow()+timedelta(days=1), status="active")
+                  expires_at=utcnow()+timedelta(days=1), status="active", purchase_mode="auto_buy")
     values.update(changes)
     rule = Permission(**values)
     db.add(rule)
+    db.flush()
+    if rule.status == "active":
+        issue_card(db, rule)
     db.commit()
     return rule
 

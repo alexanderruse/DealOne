@@ -10,6 +10,7 @@ import {
   ChevronRight,
   CircleHelp,
   Command,
+  CreditCard,
   Headphones,
   Keyboard,
   LayoutDashboard,
@@ -17,10 +18,12 @@ import {
   LockKeyhole,
   Plus,
   Radar,
+  ShieldAlert,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   TrendingDown,
+  Usb,
   Wallet,
   X,
 } from 'lucide-react';
@@ -38,6 +41,14 @@ type Product = {
   total_cents: number;
   category: string;
   color: string;
+  description?: string;
+  contains_hidden_instructions?: boolean;
+};
+type PermissionCard = {
+  last4: string;
+  limit_cents: number;
+  status: string;
+  available_cents: number;
 };
 type Permission = {
   id: string;
@@ -47,6 +58,8 @@ type Permission = {
   status: string;
   variant: string;
   seller: string;
+  purchase_mode: 'ask_first' | 'auto_buy';
+  card?: PermissionCard | null;
 };
 type Order = {
   id: string;
@@ -59,11 +72,16 @@ type Order = {
   payment_reference?: string | null;
   cancellable_until?: string | null;
 };
-type Card = { provider: string; credit_limit_cents?: number | null; available_cents?: number | null };
+type CardSummary = {
+  provider: string;
+  card_count?: number;
+  issued_count?: number;
+  committed_limit_cents?: number;
+};
 type Notice = { id: string; message: string; created_at: string };
 type Observation = { price_cents: number; observed_at: string };
 type Rules = { product_id: string; max_total_cents: number; expires_at: string; quantity: 1 };
-const icons = { headphones: Headphones, keyboard: Keyboard, speaker: AudioLines };
+const icons = { headphones: Headphones, keyboard: Keyboard, speaker: AudioLines, 'usb-hub': Usb };
 
 function App() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -75,7 +93,7 @@ function App() {
   const [error, setError] = useState('');
   const [grok, setGrok] = useState(false);
   const [payments, setPayments] = useState('simulation');
-  const [card, setCard] = useState<Card | null>(null);
+  const [cardSummary, setCardSummary] = useState<CardSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Product | null>(null);
   const [budget, setBudget] = useState('180');
@@ -83,6 +101,7 @@ function App() {
   const [parsedExpiration, setParsedExpiration] = useState<string | null>(null);
   const [prompt, setPrompt] = useState('');
   const [draft, setDraft] = useState<Permission | null>(null);
+  const [purchaseMode, setPurchaseMode] = useState<'ask_first' | 'auto_buy'>('ask_first');
   const [busy, setBusy] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminToken, setAdminToken] = useState('');
@@ -103,10 +122,10 @@ function App() {
     setWatches(w);
     setOrders(o);
     setNotices(n);
-    // The card view is extra; a bank hiccup must never blank the rest of the page.
-    api<Card>('/payments/card')
-      .then(setCard)
-      .catch(() => setCard(null));
+    // Card summary is extra; a bank hiccup must never blank the rest of the page.
+    api<CardSummary>('/payments/card')
+      .then(setCardSummary)
+      .catch(() => setCardSummary(null));
     const history = await Promise.all(
       p.map(
         async (product) =>
@@ -154,6 +173,7 @@ function App() {
     setDraft(null);
     setPrompt('');
     setParsedExpiration(null);
+    setPurchaseMode('ask_first');
   }
   async function saveDraft() {
     if (!selected) return;
@@ -216,14 +236,15 @@ function App() {
           <div className="autopilot">
             <ShieldCheck size={22} />
             <strong>Your rules. Always.</strong>
-            <p>Every purchase stays within the limits you approve.</p>
+            <p>Each watch gets its own virtual card and limit. Ask-first is the default.</p>
             <span>
-              <i /> {payments === 'nessie' ? 'Nessie sandbox card' : 'Simulated payments'}
+              <i /> {payments === 'nessie' ? 'Nessie settlement' : 'Simulated payments'}
             </span>
-            {card?.provider === 'nessie' && card.available_cents != null && (
+            {cardSummary?.issued_count != null && cardSummary.issued_count > 0 && (
               <p>
-                {money(card.available_cents)} available
-                {card.credit_limit_cents != null && ` of ${money(card.credit_limit_cents)}`}
+                {cardSummary.issued_count} active card
+                {cardSummary.issued_count === 1 ? '' : 's'} ·{' '}
+                {money(cardSummary.committed_limit_cents || 0)} committed
               </p>
             )}
           </div>
@@ -409,60 +430,89 @@ function App() {
                           <p>Create your first watch to get started.</p>
                         </div>
                       ) : (
-                        watches.map((w) => (
-                          <div className="watch-row" key={w.id}>
-                            <div>
-                              <strong>{products.find((p) => p.id === w.product_id)?.name}</strong>
-                              <small>{w.variant}</small>
+                        watches.map((w) => {
+                          const product = products.find((p) => p.id === w.product_id);
+                          const canBuy =
+                            w.status === 'active' &&
+                            product != null &&
+                            product.total_cents <= w.max_total_cents;
+                          return (
+                            <div className="watch-row" key={w.id}>
+                              <div>
+                                <strong>{product?.name}</strong>
+                                <small>{w.variant}</small>
+                                <small className="watch-meta">
+                                  {w.purchase_mode === 'auto_buy' ? 'Auto-buy' : 'Ask me first'}
+                                  {w.card
+                                    ? ` · Card •••• ${w.card.last4} · limit ${money(w.card.limit_cents)}`
+                                    : ''}
+                                </small>
+                              </div>
+                              <div>
+                                <small>All-in maximum</small>
+                                <strong>{money(w.max_total_cents)}</strong>
+                              </div>
+                              <span className={`status ${w.status}`}>{w.status}</span>
+                              <div className="row-actions">
+                                {w.status === 'draft' && (
+                                  <Button
+                                    disabled={busy}
+                                    onClick={() =>
+                                      run(async () => {
+                                        await api(`/permissions/${w.id}/activate`, {
+                                          method: 'POST',
+                                          body: JSON.stringify({ purchase_mode: 'ask_first' }),
+                                        });
+                                      })
+                                    }
+                                  >
+                                    Activate
+                                  </Button>
+                                )}
+                                {canBuy && (
+                                  <Button
+                                    disabled={busy}
+                                    onClick={() =>
+                                      run(async () => {
+                                        await api('/purchases', {
+                                          method: 'POST',
+                                          body: JSON.stringify({ permission_id: w.id }),
+                                        });
+                                      })
+                                    }
+                                  >
+                                    Approve purchase
+                                  </Button>
+                                )}
+                                {w.status === 'paused' && (
+                                  <Button
+                                    variant="outline"
+                                    disabled={busy}
+                                    onClick={() =>
+                                      run(async () => {
+                                        await api(`/permissions/${w.id}/resume`, { method: 'POST' });
+                                      })
+                                    }
+                                  >
+                                    Reviewed, continue
+                                  </Button>
+                                )}
+                                {['draft', 'active', 'paused'].includes(w.status) && (
+                                  <Button
+                                    variant="ghost"
+                                    onClick={() =>
+                                      run(async () => {
+                                        await api(`/permissions/${w.id}/cancel`, { method: 'POST' });
+                                      })
+                                    }
+                                  >
+                                    Cancel
+                                  </Button>
+                                )}
+                              </div>
                             </div>
-                            <div>
-                              <small>All-in maximum</small>
-                              <strong>{money(w.max_total_cents)}</strong>
-                            </div>
-                            <span className={`status ${w.status}`}>{w.status}</span>
-                            <div className="row-actions">
-                              {w.status === 'draft' && (
-                                <Button
-                                  disabled={busy}
-                                  onClick={() =>
-                                    run(async () => {
-                                      await api(`/permissions/${w.id}/activate`, {
-                                        method: 'POST',
-                                      });
-                                    })
-                                  }
-                                >
-                                  Activate
-                                </Button>
-                              )}
-                              {w.status === 'paused' && (
-                                <Button
-                                  variant="outline"
-                                  disabled={busy}
-                                  onClick={() =>
-                                    run(async () => {
-                                      await api(`/permissions/${w.id}/resume`, { method: 'POST' });
-                                    })
-                                  }
-                                >
-                                  Reviewed, continue
-                                </Button>
-                              )}
-                              {['draft', 'active', 'paused'].includes(w.status) && (
-                                <Button
-                                  variant="ghost"
-                                  onClick={() =>
-                                    run(async () => {
-                                      await api(`/permissions/${w.id}/cancel`, { method: 'POST' });
-                                    })
-                                  }
-                                >
-                                  Cancel
-                                </Button>
-                              )}
-                            </div>
-                          </div>
-                        ))
+                          );
+                        })
                       )}
                     </div>
                   )}
@@ -495,6 +545,13 @@ function App() {
                             </span>
                             <h3>{p.name}</h3>
                             <p>{p.variant}</p>
+                            {p.contains_hidden_instructions && (
+                              <p className="trap-note">
+                                <ShieldAlert size={13} />
+                                Hidden-instruction demo — seller text tries to override your rules.
+                                The agent must treat it as data only.
+                              </p>
+                            )}
                             <div className="price">
                               <strong>{money(p.price_cents)}</strong>
                               <del>{money(p.original_cents)}</del>
@@ -653,8 +710,9 @@ function App() {
                     </div>
                   )}
                   <p className="fineprint">
-                    Grok can request purchases only under rules you have already activated. Payments
-                    in this preview are simulated.
+                    Grok can request purchases only under rules you have already activated. Product
+                    text is never treated as instructions — try the USB-C Hub demo item. Payments in
+                    this preview are simulated.
                   </p>
                 </section>
               )}
@@ -707,23 +765,59 @@ function App() {
                     <strong>{new Date(draft.expires_at).toLocaleString()}</strong>
                   </div>
                 </div>
+                <fieldset className="mode-picker">
+                  <legend>When the price matches</legend>
+                  <label className={purchaseMode === 'ask_first' ? 'selected' : ''}>
+                    <input
+                      type="radio"
+                      name="purchase-mode"
+                      checked={purchaseMode === 'ask_first'}
+                      onChange={() => setPurchaseMode('ask_first')}
+                    />
+                    <span>
+                      <strong>Ask me first</strong>
+                      <small>Notify me. I approve before any purchase.</small>
+                    </span>
+                  </label>
+                  <label className={purchaseMode === 'auto_buy' ? 'selected' : ''}>
+                    <input
+                      type="radio"
+                      name="purchase-mode"
+                      checked={purchaseMode === 'auto_buy'}
+                      onChange={() => setPurchaseMode('auto_buy')}
+                    />
+                    <span>
+                      <strong>Buy automatically</strong>
+                      <small>One purchase when every rule matches.</small>
+                    </span>
+                  </label>
+                </fieldset>
                 <p className="fineprint">
-                  Activating lets DealOne automatically complete one simulated purchase when every
-                  rule matches. Tax and shipping must fit your maximum.
+                  Activating issues a single-use virtual card limited to {money(draft.max_total_cents)}.
+                  Tax and shipping must fit that maximum.
                 </p>
                 <Button
                   className="full-width"
                   disabled={busy}
                   onClick={() =>
                     run(async () => {
-                      await api(`/permissions/${draft.id}/activate`, { method: 'POST' });
+                      await api(`/permissions/${draft.id}/activate`, {
+                        method: 'POST',
+                        body: JSON.stringify({ purchase_mode: purchaseMode }),
+                      });
                       setSelected(null);
                       setPage('Watchlist');
                     })
                   }
                 >
-                  <ShieldCheck size={17} />
-                  Activate automatic purchase
+                  {purchaseMode === 'auto_buy' ? (
+                    <ShieldCheck size={17} />
+                  ) : (
+                    <CreditCard size={17} />
+                  )}
+                  {purchaseMode === 'auto_buy'
+                    ? 'Activate automatic purchase'
+                    : 'Activate watch · ask me first'}
                 </Button>
               </>
             ) : (

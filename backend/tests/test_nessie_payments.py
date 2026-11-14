@@ -9,15 +9,17 @@ from app import payments
 from app.config import settings
 from app.models import Order, PaymentAuthorization, Permission, Product, utcnow
 from app.payments import NessieProvider, PaymentUnavailable
-from app.services import PurchaseRejected, complete_order, prepare_order
+from app.services import PurchaseRejected, complete_order, prepare_order, issue_card
 
 
 def active(db):
     p = db.get(Product, "headphones")
     rule = Permission(owner="owner", product_id=p.id, variant=p.variant, seller=p.seller, condition=p.condition,
                       currency=p.currency, quantity=1, max_total_cents=25000,
-                      expires_at=utcnow() + timedelta(days=1), status="active")
+                      expires_at=utcnow() + timedelta(days=1), status="active", purchase_mode="auto_buy")
     db.add(rule)
+    db.flush()
+    issue_card(db, rule)
     db.commit()
     return rule
 
@@ -150,8 +152,10 @@ def test_storefront_route_maps_bank_answers_to_http(client, db, nessie):
 
 def test_card_view_and_mode_are_reported(client, nessie):
     assert client.get("/api/session").json()["payments"] == "nessie"
-    card = client.get("/api/payments/card").json()
-    assert card["provider"] == "nessie" and card["credit_limit_cents"] == 100_000
+    summary = client.get("/api/payments/card").json()
+    assert summary["provider"] == "nessie"
+    assert summary["settlement"]["credit_limit_cents"] == 100_000
+    assert summary["card_count"] == 0
 
 
 def test_nessie_mode_requires_key_and_card(monkeypatch):
