@@ -60,11 +60,11 @@ Browser contexts send only an internal worker credential, and navigation is rest
 
 ## Deploy to Vultr
 
-See **[deployment setup](docs/DEPLOYMENT.md)** for exact GitHub secrets, workflows, DNS, and rollback steps. The existing registry is `thegoatsdockerregistry` (`369a6c53-fd50-4fe2-93d6-a151ec00c845`). The deployment targets **dealone.work**, **New York/New Jersey (`ewr`)**, and **two Optimized Cloud nodes**.
+See **[deployment setup](docs/DEPLOYMENT.md)** for exact GitHub secrets, workflows, DNS, and rollback steps. The existing registry is `thegoatsdockerregistry` (`369a6c53-fd50-4fe2-93d6-a151ec00c845`). Deployment targets **dealone.work** on your existing Vultr Kubernetes cluster.
 
-Infrastructure provisioning is manual and starts with a read-only cost quote. Application deployment never provisions a cluster. Configure the required secrets and variables before using either workflow; no cloud resources are created by cloning or running this project locally.
+Create the Kubernetes cluster in Vultr and set its UUID as the GitHub repository variable `VULTR_CLUSTER_ID`. CI/CD never creates a cluster or worker nodes. Deployment connects to the existing cluster and installs or reconciles Traefik and cert-manager for ingress and HTTPS. Traefik's LoadBalancer service creates a billed Vultr load balancer if one does not already exist.
 
-Domain DNS can be automatic: add `PORKBUN_API_KEY` and `PORKBUN_SECRET_API_KEY` with API access enabled for `dealone.work`. Provisioning and deployment then synchronize the root website record to Traefik's load balancer, preserving email records and subdomains. Without these keys, the workflows print manual DNS instructions. See the deployment guide for setup and a standalone DNS refresh workflow.
+Domain DNS can be automatic: add `PORKBUN_API_KEY` and `PORKBUN_SECRET_API_KEY` with API access enabled for `dealone.work`. Deployment then synchronizes the root website record to Traefik's load balancer, preserving email records and subdomains. Without these keys, the workflows print manual DNS instructions. See the deployment guide for setup and a standalone DNS refresh workflow.
 
 ## Verify
 
@@ -76,7 +76,7 @@ kubectl kustomize infra/k8s
 
 For browser acceptance tests, install frontend dependencies in Node 22 and matching Playwright Chromium, then run `npm run test:e2e` in `frontend`. Tests exercise real API state and the browser worker; backend tests use an isolated temporary database schema.
 
-`Checks` runs frontend build/audit, the Docker stack, backend integration tests, and browser tests. `Deploy DealOne` runs only after successful main-branch push checks once `VULTR_CLUSTER_ID` is configured. Manual redeployment also supports previous image tags.
+Every push to `main` automatically runs `Checks` → `Deploy DealOne` → `Synchronize Porkbun DNS` → `Refresh registry pull credentials`, proceeding only after the previous workflow succeeds. Checks also run on pull requests without deploying. Deployment reports missing configuration explicitly. Manual runs remain available for recovery and rollback; registry credentials also refresh weekly.
 
 Health endpoints: `/api/health/live`, `/api/health/ready`, `/api/health/worker`. Interactive API reference: `/docs` on the internal API service (not routed by the public web server).
 

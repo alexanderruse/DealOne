@@ -6,7 +6,7 @@ Open [repository Actions secrets](https://github.com/alexanderruse/DealOne/setti
 
 | Secret | Required value |
 | --- | --- |
-| `VULTR_API_KEY` | Vultr API credential authorized for VKE, plan/region discovery, and existing registry credentials |
+| `VULTR_API_KEY` | Current Vultr API key with access to the existing VKE cluster and container registry |
 | `DATABASE_URL` | Tiger Cloud SQLAlchemy URL: `postgresql+psycopg://USER:PASSWORD@HOST:PORT/tsdb?sslmode=require` |
 | `XAI_API_KEY` | Sponsor-provided Grok API key |
 | `SESSION_SECRET` | A unique random value of at least 32 characters |
@@ -23,9 +23,9 @@ Create these repository **Variables**:
 
 | Variable | Value |
 | --- | --- |
-| `ACME_EMAIL` | Team email for Let's Encrypt registration |
+| `ACME_EMAIL` | Team email for Let's Encrypt registration; required when deployment configures HTTPS |
 | `XAI_MODEL` | Exact enabled model ID from your sponsor account; must support structured outputs and function calling |
-| `VULTR_CLUSTER_ID` | Add the UUID printed by the provisioning workflow after cluster creation |
+| `VULTR_CLUSTER_ID` | UUID of your existing Vultr Kubernetes cluster (`dealone-cluster`); use the cluster ID from its console URL or API, not its label or IP address |
 | `VULTR_REGISTRY_ENDPOINT` | Optional override; otherwise discovered from Vultr metadata, including the registry namespace |
 | `RESEND_FROM_EMAIL` | Optional; reserved for future email delivery |
 
@@ -33,15 +33,13 @@ Domain `dealone.work`, region `ewr`, and registry UUID `369a6c53-fd50-4fe2-93d6-
 
 Vultr API access rules must allow the machine executing the workflow. If your API key is restricted to one fixed IP, use an appropriately secured self-hosted runner or configure an allowed runner egress path. Do not silently disable your account's access controls.
 
-## 2. Quote and provision infrastructure
+## 2. Use your existing Kubernetes cluster
 
-In **Actions → Provision Vultr infrastructure**, run with operation **quote**. It is read-only and selects the least expensive available Optimized Cloud plan in `ewr` with at least 2 vCPUs and 4 GB RAM per node. It prints the plan, version, and combined monthly worker cost. Load balancer, registry, and Tiger Cloud charges are additional.
+The cluster is created and managed in the Vultr console. There is no cluster provisioning workflow. Set `VULTR_CLUSTER_ID` to the UUID of your existing `dealone-cluster`, not its label, node-pool ID, or public IP address. Wait for the cluster to become Active before the first deployment.
 
-After reviewing the quote, run again with operation **provision**, the exact plan ID, and a worker monthly cost ceiling. The script refuses to create a cluster if the plan or cost does not match. It reuses a uniquely named `dealone` cluster instead of creating duplicates. If that region/type is unavailable, it stops rather than changing your requested infrastructure.
+The deployment workflow retrieves kubeconfig through the Vultr API, waits for nodes to become Ready, and runs `scripts/bootstrap.py` against that cluster. This installs or reconciles pinned Traefik and cert-manager Helm releases and the Let's Encrypt issuer. Repeated deploys reuse the releases and do not create another cluster or worker nodes. Traefik's LoadBalancer service requests a Vultr load balancer, which has a separate recurring charge.
 
-The public catalog checked on November 14, 2026 lists `voc-c-2c-4gb-50s-amd` as available in `ewr` at **$40/month per node**, or **$80/month for two workers**, excluding other services. The workflow always rechecks availability and price; this recorded quote does not reserve capacity.
-
-The workflow waits for the cluster, installs pinned Traefik and cert-manager charts, and prints the cluster ID and load-balancer service. Set `VULTR_CLUSTER_ID` in repository Variables. If creation succeeded but ingress installation failed, rerun provisioning to reuse the cluster and finish setup.
+No downloaded kubeconfig, cluster password, or SSH key is needed in GitHub. `VULTR_API_KEY` must work from the GitHub runner: manually creating a cluster does not bypass API authentication or source-IP restrictions. An HTTP 401 while obtaining kubeconfig or registry credentials means the key or API access settings still need correction.
 
 ### Automatic Porkbun DNS
 
@@ -57,20 +55,13 @@ Public DNS resolvers may cache the old address until its previous TTL expires. A
 
 For manual setup, the load balancer appears under namespace `traefik`, service `traefik`. Set your registrar's **root A record** (blank Host at Porkbun, `@` at GoDaddy) to its external IP. Replace conflicting root website/parking records, preserving email records. Keep ports 80 and 443 reachable; cert-manager uses HTTP-01 validation. No `www` hostname is configured. GoDaddy API synchronization is not implemented: `dealone.work` currently uses Porkbun nameservers.
 
-For local tooling instead of Actions:
-
-```sh
-python3 scripts/vultr.py quote
-python3 scripts/vultr.py provision --apply --plan YOUR_REVIEWED_PLAN --max-worker-monthly-usd YOUR_CEILING
-```
-
-Export `VULTR_API_KEY` securely first. For bootstrap set `VULTR_CLUSTER_ID`, `KUBECONFIG`, and `ACME_EMAIL`, run `python3 scripts/vultr.py kubeconfig`, then `python3 scripts/bootstrap.py`. Requires `kubectl` and Helm 3.
+For local bootstrap instead of Actions, export `VULTR_API_KEY`, `VULTR_CLUSTER_ID`, `KUBECONFIG`, and `ACME_EMAIL` securely, run `python3 scripts/vultr.py kubeconfig`, then `python3 scripts/bootstrap.py`. Requires `kubectl` and Helm 3.
 
 ## 3. Deploy application
 
-Run **Actions → Deploy DealOne** with a blank image tag. It validates runtime configuration; discovers the existing registry; gets expiring push credentials; builds Linux AMD64 API, worker, and web images tagged with the commit SHA; retrieves kubeconfig; refreshes read-only pull credentials; runs migrations and seed data as a Job; and rolls out the application.
+Push or merge to `main` to deploy automatically, including the first deployment. `Checks` runs first; a successful push check starts **Deploy DealOne**. No manual workflow run is required. Deployment validates runtime configuration; connects to your existing cluster; installs or reconciles ingress and HTTPS components; discovers the existing registry; gets expiring push credentials; builds Linux AMD64 API, worker, and web images tagged with the commit SHA; refreshes read-only pull credentials; synchronizes DNS; runs migrations and seed data as a Job; and rolls out the application.
 
-Subsequent successful main-branch push checks deploy automatically. Provisioning and application deployment share a concurrency group, preventing overlapping production mutations. Workflows never print registry passwords, API keys, connection strings, or generated kubeconfig. Credentials are removed from the runner at completion.
+After deployment succeeds, **Synchronize Porkbun DNS** runs automatically, followed on success by **Refresh registry pull credentials**. These maintenance workflows repeat deployment's DNS and credential reconciliation and can also be run independently for recovery. Pull-request checks do not deploy. Manual deployment remains available with a blank image tag for redeployment or a previous image tag for rollback. Deployment, DNS synchronization, and registry credential refresh share a concurrency group, preventing overlapping production mutations. Workflows never print registry passwords, API keys, connection strings, or generated kubeconfig. Credentials are removed from the runner at completion.
 
 Vultr's registry credential endpoint used here is the documented registry API `OPTIONS /v2/registry/{id}/docker-credentials` with read/write and expiry parameters. Your API identity must have access to this registry. The pull token expires after 30 days and is refreshed by a weekly workflow, every application deployment, or a manual **Refresh registry pull credentials** run. Monitor failed scheduled runs; private-repo Actions minutes and provider access still apply.
 

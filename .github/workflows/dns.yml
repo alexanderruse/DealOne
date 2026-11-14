@@ -1,5 +1,9 @@
 name: Synchronize Porkbun DNS
 on:
+  workflow_run:
+    workflows: [Deploy DealOne]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
@@ -8,7 +12,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   synchronize:
-    if: vars.VULTR_CLUSTER_ID != ''
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
@@ -17,6 +23,8 @@ jobs:
       KUBECONFIG: /tmp/dealone.kubeconfig
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - uses: azure/setup-kubectl@v4
       - name: Connect to cluster
         run: python3 scripts/vultr.py kubeconfig
