@@ -1,0 +1,20 @@
+:80 {
+  encode zstd gzip
+  handle /api/* {
+    reverse_proxy api:8000
+  }
+  handle /health {
+    respond "ok" 200
+  }
+  handle {
+    root * /srv
+    try_files {path} /index.html
+    file_server
+  }
+  header {
+    X-Content-Type-Options nosniff
+    X-Frame-Options DENY
+    Referrer-Policy same-origin
+    Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'"
+  }
+}

@@ -1,0 +1,58 @@
+name: Provision Vultr infrastructure
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Read-only quote, or provision the reviewed plan
+        type: choice
+        options: [quote, provision]
+        default: quote
+      plan:
+        description: Exact Optimized Cloud plan ID from quote (required to provision)
+        type: string
+      max_worker_monthly_usd:
+        description: Worker-node monthly cost ceiling, excludes load balancer / registry
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: dealone-production
+  cancel-in-progress: false
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+      VULTR_REGION: ewr
+      ACME_EMAIL: ${{ vars.ACME_EMAIL }}
+      KUBECONFIG: /tmp/dealone.kubeconfig
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-kubectl@v4
+      - uses: azure/setup-helm@v4.3.0
+        with: {version: v3.17.3}
+      - name: Quote or provision
+        id: cluster
+        env:
+          OPERATION: ${{ inputs.operation }}
+          SELECTED_PLAN: ${{ inputs.plan }}
+          COST_CEILING: ${{ inputs.max_worker_monthly_usd }}
+        run: |
+          if [ "$OPERATION" = quote ]; then
+            python3 scripts/vultr.py quote
+          else
+            test -n "$ACME_EMAIL"
+            python3 scripts/vultr.py provision --apply --plan "$SELECTED_PLAN" --max-worker-monthly-usd "$COST_CEILING"
+          fi
+      - name: Configure cluster and install ingress / certificates
+        if: inputs.operation == 'provision'
+        env:
+          VULTR_CLUSTER_ID: ${{ steps.cluster.outputs.cluster_id }}
+        run: |
+          python3 scripts/vultr.py kubeconfig
+          python3 scripts/bootstrap.py
+          echo "Set repository variable VULTR_CLUSTER_ID=$VULTR_CLUSTER_ID" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove local cluster credentials
+        if: always()
+        run: rm -f "$KUBECONFIG"

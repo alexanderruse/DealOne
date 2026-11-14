@@ -1,0 +1,28 @@
+name: Refresh registry pull credentials
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: dealone-production
+  cancel-in-progress: false
+jobs:
+  refresh:
+    if: vars.VULTR_CLUSTER_ID != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+      VULTR_CLUSTER_ID: ${{ vars.VULTR_CLUSTER_ID }}
+      VULTR_REGISTRY_ID: 369a6c53-fd50-4fe2-93d6-a151ec00c845
+      KUBECONFIG: /tmp/dealone.kubeconfig
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-kubectl@v4
+      - run: |
+          python3 scripts/vultr.py kubeconfig
+          python3 scripts/vultr.py registry-pull
+      - if: always()
+        run: rm -f "$KUBECONFIG"

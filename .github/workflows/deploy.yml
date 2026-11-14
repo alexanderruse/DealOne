@@ -1,0 +1,87 @@
+name: Deploy DealOne
+on:
+  workflow_run:
+    workflows: [Checks]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Existing image commit SHA for rollback; leave blank to build current revision
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: dealone-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: >-
+      vars.VULTR_CLUSTER_ID != '' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+      VULTR_CLUSTER_ID: ${{ vars.VULTR_CLUSTER_ID }}
+      VULTR_REGISTRY_ID: 369a6c53-fd50-4fe2-93d6-a151ec00c845
+      VULTR_REGISTRY_ENDPOINT: ${{ vars.VULTR_REGISTRY_ENDPOINT }}
+      KUBECONFIG: /tmp/dealone.kubeconfig
+      DOCKER_CONFIG: /tmp/dealone-docker
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+      DEMO_ADMIN_TOKEN: ${{ secrets.DEMO_ADMIN_TOKEN }}
+      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+      XAI_MODEL: ${{ vars.XAI_MODEL }}
+      APP_DOMAIN: dealone.work
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      RESEND_FROM_EMAIL: ${{ vars.RESEND_FROM_EMAIL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: azure/setup-kubectl@v4
+      - name: Validate runtime configuration
+        run: python3 -c 'import sys; sys.path.insert(0,"scripts"); from deploy import runtime_config; runtime_config()'
+      - name: Get short-lived push credentials and registry endpoint
+        id: registry
+        run: python3 scripts/vultr.py registry-push
+      - name: Select immutable image tag
+        id: revision
+        env:
+          ROLLBACK_TAG: ${{ inputs.image_tag }}
+        run: |
+          TAG="${ROLLBACK_TAG:-$(git rev-parse HEAD)}"
+          if ! [[ "$TAG" =~ ^[a-f0-9]{40}$ ]]; then echo 'Expected a full commit SHA'; exit 1; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - name: Build and push images
+        if: inputs.image_tag == ''
+        env:
+          ENDPOINT: ${{ steps.registry.outputs.endpoint }}
+          TAG: ${{ steps.revision.outputs.tag }}
+        run: |
+          docker buildx create --use
+          docker buildx build --platform linux/amd64 --target api --tag "$ENDPOINT/dealone-api:$TAG" --push backend
+          docker buildx build --platform linux/amd64 --target worker --tag "$ENDPOINT/dealone-worker:$TAG" --push backend
+          docker buildx build --platform linux/amd64 --tag "$ENDPOINT/dealone-web:$TAG" --push frontend
+      - name: Configure cluster and refresh read-only pull credentials
+        run: |
+          python3 scripts/vultr.py kubeconfig
+          kubectl apply -f infra/k8s/namespace.yaml
+          python3 scripts/vultr.py registry-pull
+      - name: Migrate and roll out
+        env:
+          ENDPOINT: ${{ steps.registry.outputs.endpoint }}
+          TAG: ${{ steps.revision.outputs.tag }}
+        run: python3 scripts/deploy.py --endpoint "$ENDPOINT" --tag "$TAG"
+      - name: Verify HTTPS and API
+        run: |
+          kubectl wait --for=condition=Ready certificate/dealone-tls -n dealone --timeout=300s
+          curl --fail --retry 5 --retry-delay 5 https://dealone.work/api/health/ready
+          curl --fail https://dealone.work/api/health/worker
+          curl --fail https://dealone.work/health
+      - name: Remove local credentials
+        if: always()
+        run: |
+          rm -f "$KUBECONFIG" "$DOCKER_CONFIG/config.json"

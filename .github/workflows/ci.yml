@@ -1,0 +1,54 @@
+name: Checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22', cache: npm, cache-dependency-path: frontend/package-lock.json}
+      - name: Frontend dependencies and audit
+        working-directory: frontend
+        run: |
+          npm ci
+          npm audit --audit-level=high
+          npm run build
+      - name: Start Docker stack
+        run: |
+          cp .env.example .env
+          docker compose up -d --build --wait
+      - name: Backend policy, API, recovery, and concurrency tests
+        run: docker compose exec -T api python -m pytest -q tests
+      - name: Browser acceptance tests
+        working-directory: frontend
+        env:
+          PLAYWRIGHT_BASE_URL: http://localhost:3001
+          DEMO_ADMIN_TOKEN: local-demo-admin
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:e2e
+      - name: Validate Kubernetes manifests and deployment scripts
+        run: |
+          kubectl kustomize infra/k8s > /tmp/dealone-manifests.yaml
+          docker run --rm -v /tmp/dealone-manifests.yaml:/manifest.yaml:ro ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary /manifest.yaml
+          python3 -m compileall -q scripts
+          python3 -m unittest discover -s scripts/tests -q
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --tail=80
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-results
+          path: |
+            frontend/test-results
+            frontend/playwright-report
+          if-no-files-found: ignore
+      - name: Stop stack
+        if: always()
+        run: docker compose down
