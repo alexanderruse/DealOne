@@ -11,7 +11,10 @@ from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 from .config import settings
 from .db import get_db
-from .models import Product, Permission, Order, PriceObservation, Notification, Heartbeat, utcnow
+from .models import (Product, Permission, Order, PriceObservation, Notification, Heartbeat,
+                     PaymentAuthorization, utcnow)
+from . import payments
+from .payments import PaymentUnavailable
 from .schemas import Rules, ParseRequest, AssistantRequest, PriceChange, PermissionReference
 from .services import (serialize, product_view, prepare_order, complete_order,
                        PurchaseRejected, total)
@@ -68,9 +71,15 @@ async def rejection(request, exc):
     return JSONResponse({"detail": str(exc)}, status_code=409)
 
 
+@app.exception_handler(PaymentUnavailable)
+async def bank_unavailable(request, exc):
+    # Fail closed: no purchase is recorded when the bank cannot confirm the charge.
+    return JSONResponse({"detail": f"Bank unavailable: {exc}"}, status_code=503)
+
+
 @app.get("/api/health/live")
 def live():
-    return {"status": "ok", "payments": "simulation"}
+    return {"status": "ok", "payments": settings().payments_mode}
 
 
 @app.get("/api/health/ready")
@@ -92,7 +101,15 @@ def worker_health(db: Session = Depends(get_db)):
 
 @app.get("/api/session")
 def session(user: str = Depends(owner)):
-    return {"session_id": user, "grok_configured": bool(settings().xai_api_key), "payments": "simulation"}
+    return {"session_id": user, "grok_configured": bool(settings().xai_api_key), "payments": settings().payments_mode}
+
+
+@app.get("/api/payments/card")
+def payment_card(user: str = Depends(owner)):
+    # Read-only view of the sandbox card the agent pays with. Never includes credentials.
+    if settings().payments_mode != "nessie":
+        return {"provider": "simulation"}
+    return {"provider": "nessie", **payments.provider.card()}
 
 
 @app.get("/api/products")
@@ -182,7 +199,11 @@ def purchase(body: PermissionReference, user: str = Depends(owner), db: Session 
 
 @app.get("/api/orders")
 def orders(user: str = Depends(owner), db: Session = Depends(get_db)):
-    return [serialize(o) for o in db.scalars(select(Order).where(Order.owner == user).order_by(Order.created_at.desc()))]
+    results = []
+    for o in db.scalars(select(Order).where(Order.owner == user).order_by(Order.created_at.desc())):
+        authorization = db.get(PaymentAuthorization, o.id)
+        results.append({**serialize(o), "payment_reference": authorization.token if authorization else None})
+    return results
 
 
 @app.get("/api/notifications")
