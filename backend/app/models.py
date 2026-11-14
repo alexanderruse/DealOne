@@ -31,6 +31,12 @@ class Product(Base):
     # Seller/listing text is untrusted data. The trap product stores bait here on purpose.
     description: Mapped[str] = mapped_column(Text, default="")
 
+    source_kind: Mapped[str] = mapped_column(String(20), default="demo")
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    icon: Mapped[str] = mapped_column(String(30), default="package")
+    price_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
 
 class PriceObservation(Base):
     __tablename__ = "price_observations"

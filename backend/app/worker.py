@@ -21,7 +21,7 @@ def event(name, **fields):
 def scan():
     with SessionLocal.begin() as db:
         db.merge(Heartbeat(id="worker", updated_at=utcnow()))
-        for product in db.scalars(select(Product)):
+        for product in db.scalars(select(Product).where(Product.source_kind == "demo")):
             db.add(PriceObservation(product_id=product.id, price_cents=product.price_cents, total_cents=total(product)))
         permissions = list(db.scalars(select(Permission).where(Permission.status == "active")))
         ids = [p.id for p in permissions]
@@ -36,9 +36,12 @@ def scan():
                     notify(db, permission.owner, f"expired:{permission.id}", "Your purchase permission expired without a purchase.")
                     continue
                 product = db.get(Product, permission.product_id)
-                if total(product) > permission.max_total_cents:
+                if product.source_kind == "merchant":
+                    if product.price_checked_at and product.price_checked_at > utcnow() - timedelta(minutes=15) and product.price_cents <= permission.max_total_cents:
+                        notify(db, permission.owner, f"merchant:{permission.id}:{product.price_cents}",
+                               f"Price alert: {product.name} is ${product.price_cents/100:.2f} at {product.seller}. Tax, shipping and availability need confirmation at the store. Open the listing to review.")
                     continue
-                if permission.purchase_mode == "auto_buy":
+                if total(product) <= permission.max_total_cents:
                     prepare_order(db, permission.id)
                 else:
                     # Ask-first: alert once; never purchase until the user explicitly approves.
@@ -132,8 +135,13 @@ def tick():
 
 def main():
     settings().validate_runtime()
+    from .catalog import refresh_catalog
+    last_catalog_refresh = -300.0
     while True:
         try:
+            if time.monotonic() - last_catalog_refresh >= 300:
+                last_catalog_refresh = time.monotonic()
+                refresh_catalog()
             tick()
         except Exception:
             log.exception(json.dumps({"event": "worker_tick_failed"}))

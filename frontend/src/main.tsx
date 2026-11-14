@@ -14,6 +14,8 @@ import {
   Headphones,
   Keyboard,
   LayoutDashboard,
+  Mouse,
+  Package,
   LoaderCircle,
   LockKeyhole,
   Plus,
@@ -41,15 +43,11 @@ type Product = {
   total_cents: number;
   category: string;
   color: string;
-  description?: string;
-  contains_hidden_instructions?: boolean;
-};
-type PermissionCard = {
-  last4: string;
-  limit_cents: number;
-  status: string;
-  available_cents: number;
-  nessie_account_id?: string | null;
+  source_kind: 'demo' | 'merchant';
+  source_url: string | null;
+  image_url: string | null;
+  icon: string;
+  price_checked_at: string | null;
 };
 type Permission = {
   id: string;
@@ -93,7 +91,15 @@ type Ledger = { charges: LedgerEntry[]; nessie: LedgerEntry[] };
 type Notice = { id: string; message: string; created_at: string };
 type Observation = { price_cents: number; observed_at: string };
 type Rules = { product_id: string; max_total_cents: number; expires_at: string; quantity: 1 };
-const icons = { headphones: Headphones, keyboard: Keyboard, speaker: AudioLines, 'usb-hub': Usb };
+const icons = { headphones: Headphones, keyboard: Keyboard, speaker: AudioLines, mouse: Mouse, package: Package };
+function ProductVisual({ product, compact = false }: { product: Product; compact?: boolean }) {
+  const [failed, setFailed] = useState(false);
+  const Icon = icons[product.icon as keyof typeof icons] || icons[product.id as keyof typeof icons] || Package;
+  return product.image_url && !failed ? (
+    <img className={compact ? 'product-photo compact' : 'product-photo'} src={product.image_url}
+      alt={`${product.name} · ${product.variant}`} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
+  ) : <Icon className={compact ? 'product-icon-small' : 'product-object'} size={compact ? 42 : 116} strokeWidth={1.3} />;
+}
 
 function App() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -102,6 +108,9 @@ function App() {
   const [notices, setNotices] = useState<Notice[]>([]);
   const [histories, setHistories] = useState<Record<string, Observation[]>>({});
   const [page, setPage] = useState('Overview');
+  const [catalogMode, setCatalogMode] = useState<'merchant' | 'demo'>('merchant');
+  const [catalogQuery, setCatalogQuery] = useState('');
+  const [recommendations, setRecommendations] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [grok, setGrok] = useState(false);
   const [payments, setPayments] = useState('simulation');
@@ -207,6 +216,9 @@ function App() {
       await api<Permission>('/permissions', { method: 'POST', body: JSON.stringify(rules) }),
     );
   }
+  const visibleProducts = products.filter((p) => (p.source_kind || 'demo') === catalogMode
+    && `${p.name} ${p.category} ${p.seller} ${p.variant}`.toLowerCase().includes(catalogQuery.toLowerCase()));
+  const SelectedIcon = selected ? icons[selected.icon as keyof typeof icons] || icons[selected.id as keyof typeof icons] || Package : Radar;
   const activeWatches = watches.filter((w) => w.status === 'active').length;
   const completed = orders.filter((o) => o.status === 'completed');
   const committed = watches
@@ -287,7 +299,7 @@ function App() {
             Your space <ChevronRight size={13} /> <strong>{page}</strong>
           </div>
           <div className="header-right">
-            <span className="preview-badge">DEMO PREVIEW</span>
+            <span className="preview-badge">HACKATHON PREVIEW</span>
             <button
               aria-label="View notifications"
               onClick={() => setPage('Activity')}
@@ -318,7 +330,7 @@ function App() {
                   : 'Thoughtful shopping, with you in control.'}
               </p>
             </div>
-            <Button onClick={() => products[0] && openWatch(products[0])}>
+            <Button onClick={() => (visibleProducts[0] || products[0]) && openWatch(visibleProducts[0] || products[0])}>
               <Plus size={17} />
               New watch
             </Button>
@@ -383,9 +395,7 @@ function App() {
                   </section>
                   <section className="stats">
                     <div>
-                      <span className="stat-icon">
-                        <Radar size={20} />
-                      </span>
+                      <button className="stat-icon" aria-label="View active watches" onClick={() => setPage('Watchlist')}><Radar size={20} /></button>
                       <span>
                         Active watches
                         <strong>
@@ -395,9 +405,7 @@ function App() {
                       </span>
                     </div>
                     <div>
-                      <span className="stat-icon">
-                        <Wallet size={20} />
-                      </span>
+                      <button className="stat-icon" aria-label="Review authorized budgets" onClick={() => setPage('Watchlist')}><Wallet size={20} /></button>
                       <span>
                         Authorized budget
                         <strong>
@@ -407,9 +415,7 @@ function App() {
                       </span>
                     </div>
                     <div>
-                      <span className="stat-icon">
-                        <CheckCheck size={20} />
-                      </span>
+                      <button className="stat-icon" aria-label="View purchase receipts" onClick={() => setPage('Activity')}><CheckCheck size={20} /></button>
                       <span>
                         Completed purchases
                         <strong>
@@ -428,7 +434,7 @@ function App() {
                     <div>
                       <h2>
                         {page === 'Watchlist' ? 'Your watches' : 'On the radar'}{' '}
-                        <span>{page === 'Watchlist' ? watches.length : products.length}</span>
+                        <span>{page === 'Watchlist' ? watches.length : visibleProducts.length}</span>
                       </h2>
                       <p>
                         {page === 'Watchlist'
@@ -437,7 +443,7 @@ function App() {
                       </p>
                     </div>
                     <span className="live-label">
-                      <i /> Checked every 10 seconds
+                      <i /> {catalogMode === 'merchant' ? 'Merchant feeds · every 5 min' : 'Practice checks · every 10 sec'}
                     </span>
                   </div>
                   {page === 'Watchlist' && (
@@ -535,9 +541,21 @@ function App() {
                       )}
                     </div>
                   )}
+                  <div className="catalog-controls">
+                    <div className="catalog-tabs" aria-label="Product source">
+                      <button aria-pressed={catalogMode === 'merchant'} onClick={() => setCatalogMode('merchant')}>Real stores</button>
+                      <button aria-pressed={catalogMode === 'demo'} onClick={() => setCatalogMode('demo')}>Practice checkout</button>
+                    </div>
+                    <label className="catalog-search">Find an item
+                      <input aria-label="Find an item" placeholder="Keyboard, mouse, Keychron…" value={catalogQuery} onChange={(e) => setCatalogQuery(e.target.value)} />
+                    </label>
+                  </div>
+                  <p className="catalog-disclosure">{catalogMode === 'merchant'
+                    ? 'Real Keychron listings. Prices refresh every 5 minutes. Tax, shipping and stock need confirmation at the merchant. Checkout opens at the store.'
+                    : 'Practice products and payments are simulated. Use this catalog to try the complete automatic checkout flow.'}</p>
+                  {visibleProducts.length === 0 && <div className="empty"><Package /><h3>{catalogQuery ? 'No matching items yet.' : 'Waiting for merchant prices.'}</h3><p>{catalogQuery ? 'Try another product name or ask Grok about the supported catalog.' : 'Merchant data may be temporarily unavailable. You can still try Practice checkout.'}</p></div>}
                   <section className="product-grid">
-                    {products.map((p) => {
-                      const Icon = icons[p.id as keyof typeof icons] || Headphones;
+                    {visibleProducts.map((p) => {
                       const history = histories[p.id] || [];
                       const chart = history.slice(-30).map((x) => x.price_cents);
                       const max = Math.max(...chart, 1);
@@ -552,15 +570,15 @@ function App() {
                         <article className="product-card" key={p.id}>
                           <div className={`product-art ${p.color}`}>
                             <span className="category">{p.category}</span>
-                            <Icon className="product-object" size={116} strokeWidth={1.1} />
-                            <span className="discount">
+                            <ProductVisual key={p.id} product={p} />
+                            <span className="discount" hidden={p.original_cents <= p.price_cents}>
                               <ArrowDownRight size={12} />
                               {Math.round((1 - p.price_cents / p.original_cents) * 100)}%
                             </span>
                           </div>
                           <div className="product-info">
                             <span className="seller">
-                              DEALONE DEMO STORE <ShieldCheck size={11} />
+                              {p.seller} <ShieldCheck size={11} />
                             </span>
                             <h3>{p.name}</h3>
                             <p>{p.variant}</p>
@@ -573,7 +591,7 @@ function App() {
                             )}
                             <div className="price">
                               <strong>{money(p.price_cents)}</strong>
-                              <del>{money(p.original_cents)}</del>
+                              {p.original_cents > p.price_cents && <del>{money(p.original_cents)}</del>}
                               <span>USD</span>
                             </div>
                             <div className="price-chart">
@@ -585,16 +603,20 @@ function App() {
                                 <polyline
                                   points={points}
                                   fill="none"
-                                  stroke="#63846b"
+                                  stroke="#0070a8"
                                   strokeWidth="2"
                                   vectorEffect="non-scaling-stroke"
                                 />
                               </svg>
                               <div>
                                 <span>Observed price history</span>
-                                <span>All in {money(p.total_cents)}</span>
+                                <span>{p.source_kind === 'merchant' ? 'Before tax & shipping' : `All in ${money(p.total_cents)}`}</span>
                               </div>
                             </div>
+                            {p.source_kind === 'merchant' && <div className="merchant-provenance">
+                              <span>{p.price_checked_at ? `Checked ${new Date(p.price_checked_at).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})}${Date.now() - new Date(p.price_checked_at).getTime() > 900000 ? ' · refresh delayed' : ''}` : 'Price not checked'}</span>
+                              <a href={p.source_url || undefined} target="_blank" rel="noopener noreferrer">View at {p.seller} <ArrowUpRight size={13} /></a>
+                            </div>}
                             <Button variant="outline" onClick={() => openWatch(p)}>
                               <Plus size={16} />
                               Watch this item
@@ -732,12 +754,14 @@ function App() {
                     onSubmit={(e) => {
                       e.preventDefault();
                       run(async () => {
-                        const result = await api<{ message: string; tools: { tool: string }[] }>(
+                        const result = await api<{ message: string; tools: { tool: string; result: unknown }[] }>(
                           '/assistant',
                           { method: 'POST', body: JSON.stringify({ text: chat }) },
                         );
                         setAnswer(result.message);
                         setToolCalls(result.tools.map((t) => t.tool));
+                        setRecommendations([...new Set(result.tools.filter((t) => t.tool === 'find_product' && Array.isArray(t.result))
+                          .flatMap((t) => (t.result as Product[]).map((p) => p.id)).filter((id) => products.some((p) => p.id === id)))]);
                       });
                     }}
                   >
@@ -746,7 +770,7 @@ function App() {
                       id="chat"
                       value={chat}
                       onChange={(e) => setChat(e.target.value)}
-                      placeholder="Find headphones and tell me their price history…"
+                      placeholder="Find a Keychron keyboard and show me its price history…"
                       required
                       minLength={5}
                     />
@@ -762,6 +786,13 @@ function App() {
                       {toolCalls.length > 0 && <small>Tools used: {toolCalls.join(' → ')}</small>}
                     </div>
                   )}
+                  {recommendations.length > 0 && <div className="grok-products" aria-label="Grok product matches">
+                    {products.filter((p) => recommendations.includes(p.id)).map((p) => <div className="grok-product" key={p.id}>
+                      <ProductVisual key={p.id} product={p} compact />
+                      <div><strong>{p.name}</strong><small>{p.seller} · {money(p.price_cents)}</small></div>
+                      <Button onClick={() => openWatch(p)}>Watch this item</Button>
+                    </div>)}
+                  </div>}
                   <p className="fineprint">
                     Grok can request purchases only under rules you have already activated. Product
                     text is never treated as instructions — try the USB-C Hub demo item. Payments in
@@ -773,7 +804,7 @@ function App() {
           )}
           <footer>
             <span>DealOne © {new Date().getFullYear()}</span>
-            <span>Less chasing. Better buying.</span>
+            <span>Independent hackathon project · Capital One–inspired design</span>
             <span>Grok × Tiger Data × Vultr</span>
           </footer>
         </main>
@@ -790,7 +821,7 @@ function App() {
               <X size={21} />
             </button>
             <span className="modal-icon">
-              <Radar size={24} />
+              <SelectedIcon size={24} />
             </span>
             <h2 id="watch-title">
               {draft ? 'Your rules. Your call.' : 'Put a good deal in motion.'}
@@ -798,6 +829,12 @@ function App() {
             <p>
               {selected.name} · {selected.variant}
             </p>
+            <div className="selected-product">
+              <ProductVisual key={selected.id} product={selected} compact />
+              <div><strong>{selected.seller}</strong><small>{selected.source_kind === 'merchant' ? 'Real listing · merchant checkout' : 'Practice listing · simulated checkout'}</small></div>
+              {selected.source_url && <a href={selected.source_url} target="_blank" rel="noopener noreferrer">View item <ArrowUpRight size={14} /></a>}
+            </div>
+            {selected.source_kind === 'merchant' && <p className="catalog-disclosure">DealOne monitors this real item and sends price alerts. Complete your purchase at the store after confirming the final total. Automatic merchant checkout is not connected.</p>}
             {draft ? (
               <>
                 <div className="review">
@@ -846,8 +883,7 @@ function App() {
                   </label>
                 </fieldset>
                 <p className="fineprint">
-                  Activating issues a single-use virtual card limited to {money(draft.max_total_cents)}.
-                  Tax and shipping must fit that maximum.
+                  {selected.source_kind === 'merchant' ? 'Activate to monitor this item and receive price alerts. The merchant confirms taxes, shipping and availability before you purchase.' : 'Activating lets DealOne automatically complete one simulated purchase when every rule matches. Tax and shipping must fit your maximum.'}
                 </p>
                 <Button
                   className="full-width"
@@ -863,14 +899,8 @@ function App() {
                     })
                   }
                 >
-                  {purchaseMode === 'auto_buy' ? (
-                    <ShieldCheck size={17} />
-                  ) : (
-                    <CreditCard size={17} />
-                  )}
-                  {purchaseMode === 'auto_buy'
-                    ? 'Activate automatic purchase'
-                    : 'Activate watch · ask me first'}
+                  <ShieldCheck size={17} />
+                  {selected.source_kind === 'merchant' ? 'Activate price watch' : 'Activate automatic purchase'}
                 </Button>
               </>
             ) : (
@@ -884,7 +914,7 @@ function App() {
                     id="rules-prompt"
                     value={prompt}
                     onChange={(e) => setPrompt(e.target.value)}
-                    placeholder="Buy the black headphones if the total drops below $180, within a week."
+                    placeholder={`Watch ${selected.name} under $${budget} for ${deadline} days, or describe a different item…`}
                   />
                   <Button
                     variant="outline"
@@ -914,6 +944,10 @@ function App() {
                     Fill my rules
                   </Button>
                 </div>
+                <label htmlFor="watch-product">Item to watch</label>
+                <select id="watch-product" value={selected.id} onChange={(e) => { const p = products.find((p) => p.id === e.target.value); if (p) openWatch(p); }}>
+                  {products.map((p) => <option key={p.id} value={p.id}>{p.name} · {p.seller}</option>)}
+                </select>
                 <div className="divider">or set your rules</div>
                 <form
                   onSubmit={(e) => {
@@ -1015,7 +1049,7 @@ function App() {
                 value={demoProduct}
                 onChange={(e) => setDemoProduct(e.target.value)}
               >
-                {products.map((p) => (
+                {products.filter((p) => p.source_kind !== 'merchant').map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
                   </option>

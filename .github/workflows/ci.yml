@@ -25,6 +25,7 @@ jobs:
       - name: Start Docker stack
         run: |
           cp .env.example .env
+          echo REAL_CATALOG_ENABLED=false >> .env
           docker compose up -d --build --wait
       - name: Backend policy, API, recovery, and concurrency tests
         run: docker compose exec -T api python -m pytest -q tests
