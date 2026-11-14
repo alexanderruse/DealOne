@@ -2,7 +2,8 @@ from datetime import timedelta
 from sqlalchemy import select
 from .models import (Product, Permission, Order, MerchantOrder, PaymentAuthorization,
                      PriceObservation, Notification, utcnow)
-from .payments import provider
+from . import payments
+from .payments import PaymentDeclined
 
 
 class PurchaseRejected(ValueError):
@@ -78,7 +79,10 @@ def complete_order(db, order_id):
     # A changed checkout total requires a fresh quote instead of silently changing the order.
     if total(product) != order.total_cents:
         raise PurchaseRejected("Checkout total changed; review and create a new permission")
-    provider.authorize(db, order_id=order.id, merchant=product.seller, amount_cents=total(product))
+    try:
+        payments.provider.authorize(db, order_id=order.id, merchant=product.seller, amount_cents=total(product))
+    except PaymentDeclined as exc:
+        raise PurchaseRejected(f"Card declined: {exc}") from None
     merchant = MerchantOrder(order_id=order.id, confirmation="DO-" + order.id[:8].upper(), total_cents=total(product))
     db.add(merchant)
     product.stock -= 1
@@ -93,8 +97,10 @@ def reconcile_order(db, order, merchant):
     order.updated_at = utcnow()
     permission = db.get(Permission, order.permission_id)
     permission.status = "purchased"
+    authorization = db.get(PaymentAuthorization, order.id)
+    paid_with = "Nessie sandbox card" if authorization and not authorization.token.startswith("sim_") else "simulated card"
     notify(db, order.owner, f"receipt:{order.id}",
-           f"Simulated purchase complete. Receipt {merchant.confirmation} · ${merchant.total_cents/100:.2f}.")
+           f"Purchase complete on {paid_with}. Receipt {merchant.confirmation} · ${merchant.total_cents/100:.2f}.")
     return order
 
 
