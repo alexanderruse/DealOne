@@ -17,14 +17,14 @@ concurrency:
 jobs:
   deploy:
     if: >-
-      vars.VULTR_CLUSTER_ID != '' &&
       (github.event_name == 'workflow_dispatch' ||
        (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 60
     env:
       VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
       VULTR_CLUSTER_ID: ${{ vars.VULTR_CLUSTER_ID }}
+      ACME_EMAIL: ${{ vars.ACME_EMAIL }}
       VULTR_REGISTRY_ID: 369a6c53-fd50-4fe2-93d6-a151ec00c845
       VULTR_REGISTRY_ENDPOINT: ${{ vars.VULTR_REGISTRY_ENDPOINT }}
       KUBECONFIG: /tmp/dealone.kubeconfig
@@ -42,8 +42,27 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - uses: azure/setup-kubectl@v4
+      - uses: azure/setup-helm@v4.3.0
+        with: {version: v3.17.3}
       - name: Validate runtime configuration
-        run: python3 -c 'import sys; sys.path.insert(0,"scripts"); from deploy import runtime_config; runtime_config()'
+        run: |
+          python3 - <<'PY'
+          import os
+          import sys
+          sys.path.insert(0, "scripts")
+          from deploy import runtime_config
+          required = ("VULTR_API_KEY", "VULTR_CLUSTER_ID", "ACME_EMAIL")
+          missing = [name for name in required if not os.getenv(name, "").strip()]
+          if missing:
+              sys.exit("Missing GitHub deployment configuration: " + ", ".join(missing))
+          runtime_config()
+          PY
+      - name: Connect to existing Vultr cluster
+        run: |
+          python3 scripts/vultr.py kubeconfig
+          kubectl wait --for=condition=Ready nodes --all --timeout=300s
+      - name: Install or reconcile ingress and HTTPS certificates
+        run: python3 scripts/bootstrap.py
       - name: Get short-lived push credentials and registry endpoint
         id: registry
         run: python3 scripts/vultr.py registry-push
@@ -65,9 +84,8 @@ jobs:
           docker buildx build --platform linux/amd64 --target api --tag "$ENDPOINT/dealone-api:$TAG" --push backend
           docker buildx build --platform linux/amd64 --target worker --tag "$ENDPOINT/dealone-worker:$TAG" --push backend
           docker buildx build --platform linux/amd64 --tag "$ENDPOINT/dealone-web:$TAG" --push frontend
-      - name: Configure cluster and refresh read-only pull credentials
+      - name: Refresh read-only pull credentials
         run: |
-          python3 scripts/vultr.py kubeconfig
           kubectl apply -f infra/k8s/namespace.yaml
           python3 scripts/vultr.py registry-pull
       - name: Synchronize Porkbun domain with load balancer
