@@ -60,7 +60,7 @@ Browser contexts send only an internal worker credential, and navigation is rest
 
 ## Deploy to Vultr
 
-See **[deployment setup](docs/DEPLOYMENT.md)** for exact GitHub secrets, workflows, DNS, and rollback steps. The existing registry is `thegoatsdockerregistry` (`369a6c53-fd50-4fe2-93d6-a151ec00c845`). Deployment targets **dealone.work** on your existing Vultr Kubernetes cluster.
+See **[deployment setup](docs/DEPLOYMENT.md)** for exact GitHub secrets, workflows, DNS, and rollback steps. Deployment targets **dealone.work** on your existing Vultr Kubernetes cluster.
 
 Create the Kubernetes cluster in Vultr and set its UUID as the GitHub repository variable `VULTR_CLUSTER_ID`. CI/CD never creates a cluster or worker nodes. Deployment connects to the existing cluster and installs or reconciles Traefik and cert-manager for ingress and HTTPS. Traefik's LoadBalancer service creates a billed Vultr load balancer if one does not already exist.
 
