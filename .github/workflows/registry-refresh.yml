@@ -11,7 +11,7 @@ concurrency:
 jobs:
   refresh:
     if: vars.VULTR_CLUSTER_ID != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
       VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}

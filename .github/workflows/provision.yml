@@ -20,7 +20,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   provision:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
