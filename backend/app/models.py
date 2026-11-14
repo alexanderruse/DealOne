@@ -1,0 +1,101 @@
+from datetime import datetime, timezone
+from uuid import uuid4
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column
+from .db import Base
+
+
+def utcnow():
+    return datetime.now(timezone.utc)
+
+
+def identifier():
+    return str(uuid4())
+
+
+class Product(Base):
+    __tablename__ = "products"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(180))
+    variant: Mapped[str] = mapped_column(String(100))
+    seller: Mapped[str] = mapped_column(String(100), default="DealOne Demo Store")
+    condition: Mapped[str] = mapped_column(String(30), default="new")
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    price_cents: Mapped[int] = mapped_column(Integer)
+    original_cents: Mapped[int] = mapped_column(Integer)
+    shipping_cents: Mapped[int] = mapped_column(Integer, default=0)
+    tax_basis_points: Mapped[int] = mapped_column(Integer, default=625)
+    stock: Mapped[int] = mapped_column(Integer, default=20)
+    category: Mapped[str] = mapped_column(String(50))
+    color: Mapped[str] = mapped_column(String(30), default="violet")
+
+
+class PriceObservation(Base):
+    __tablename__ = "price_observations"
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, default=utcnow)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=identifier)
+    product_id: Mapped[str] = mapped_column(String(64), index=True)
+    price_cents: Mapped[int] = mapped_column(Integer)
+    total_cents: Mapped[int] = mapped_column(Integer)
+
+
+class Permission(Base):
+    __tablename__ = "permissions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=identifier)
+    owner: Mapped[str] = mapped_column(String(36), index=True)
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"))
+    variant: Mapped[str] = mapped_column(String(100))
+    seller: Mapped[str] = mapped_column(String(100))
+    condition: Mapped[str] = mapped_column(String(30))
+    currency: Mapped[str] = mapped_column(String(3))
+    quantity: Mapped[int] = mapped_column(Integer, default=1)
+    max_total_cents: Mapped[int] = mapped_column(Integer)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Order(Base):
+    __tablename__ = "orders"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=identifier)
+    permission_id: Mapped[str] = mapped_column(ForeignKey("permissions.id"), unique=True)
+    owner: Mapped[str] = mapped_column(String(36), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    total_cents: Mapped[int] = mapped_column(Integer)
+    confirmation: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MerchantOrder(Base):
+    __tablename__ = "merchant_orders"
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), primary_key=True)
+    confirmation: Mapped[str] = mapped_column(String(80), unique=True)
+    total_cents: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PaymentAuthorization(Base):
+    __tablename__ = "payment_authorizations"
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), primary_key=True)
+    token: Mapped[str] = mapped_column(String(80), unique=True)
+    merchant: Mapped[str] = mapped_column(String(100))
+    amount_cents: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="captured")
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    __table_args__ = (UniqueConstraint("owner", "event_key"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=identifier)
+    owner: Mapped[str] = mapped_column(String(36), index=True)
+    event_key: Mapped[str] = mapped_column(String(100))
+    message: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Heartbeat(Base):
+    __tablename__ = "heartbeats"
+    id: Mapped[str] = mapped_column(String(30), primary_key=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
