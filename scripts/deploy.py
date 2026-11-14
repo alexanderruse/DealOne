@@ -37,11 +37,14 @@ def runtime_config():
     if not os.getenv("XAI_MODEL"):
         raise RuntimeError("Set XAI_MODEL to the sponsor-enabled model identifier")
     secrets = {k: os.getenv(k, "") for k in required + ["RESEND_API_KEY", "RESEND_FROM_EMAIL", "NESSIE_API_KEY"]}
-    # Nessie sandbox payments switch on only when both the key and the card account are supplied.
-    nessie = bool(os.getenv("NESSIE_API_KEY") and os.getenv("NESSIE_CARD_ACCOUNT_ID"))
+    # Nessie turns on when the API key plus a customer (preferred) or shared card account are set.
+    nessie = bool(os.getenv("NESSIE_API_KEY") and (os.getenv("NESSIE_CUSTOMER_ID") or os.getenv("NESSIE_CARD_ACCOUNT_ID")))
+    if nessie and not os.getenv("NESSIE_MERCHANT_ID"):
+        raise RuntimeError("Nessie production mode requires NESSIE_MERCHANT_ID")
     config = {"APP_ENV": "production", "APP_DOMAIN": os.getenv("APP_DOMAIN", "dealone.work"),
               "XAI_MODEL": os.environ["XAI_MODEL"], "PAYMENTS_MODE": "nessie" if nessie else "simulation",
               "NESSIE_CARD_ACCOUNT_ID": os.getenv("NESSIE_CARD_ACCOUNT_ID", ""),
+              "NESSIE_CUSTOMER_ID": os.getenv("NESSIE_CUSTOMER_ID", ""),
               "NESSIE_MERCHANT_ID": os.getenv("NESSIE_MERCHANT_ID", ""),
               "STOREFRONT_URL": "http://api:8000", "WORKER_INTERVAL_SECONDS": "10"}
     return secrets, config

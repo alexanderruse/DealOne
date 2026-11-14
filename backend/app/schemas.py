@@ -42,3 +42,9 @@ class SearchRequest(StrictModel):
 class PriceChange(StrictModel):
     price_cents: int = Field(gt=0, le=1_000_000)
     shipping_cents: int | None = Field(default=None, ge=0, le=100_000)
+
+
+class CreditLimitChange(StrictModel):
+    available_cents: int = Field(default=0, ge=0, le=1_000_000)
+    permission_id: str | None = None
+    account_id: str | None = None

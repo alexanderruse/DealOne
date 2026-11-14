@@ -21,9 +21,12 @@ class Settings(BaseSettings):
     payments_mode: str = "simulation"
     nessie_api_key: str = ""
     nessie_base_url: str = "https://v2-prod-api.nessieisreal.com"
+    # Shared fallback account when per-permission card creation is unavailable.
     nessie_card_account_id: str = ""
+    # Customer used to mint one sandbox credit card per DealOne permission.
+    nessie_customer_id: str = ""
     nessie_merchant_id: str = ""
-    nessie_settle_immediately: bool = True
+    nessie_settle_immediately: bool = False
     cancel_window_seconds: int = 50
 
     @property
@@ -33,12 +36,15 @@ class Settings(BaseSettings):
     def validate_runtime(self):
         if self.payments_mode not in ("simulation", "nessie"):
             raise RuntimeError("PAYMENTS_MODE must be simulation or nessie")
-        if self.payments_mode == "nessie" and not (self.nessie_api_key and self.nessie_card_account_id):
-            raise RuntimeError("PAYMENTS_MODE=nessie requires NESSIE_API_KEY and NESSIE_CARD_ACCOUNT_ID")
-        if self.payments_mode not in ("simulation", "nessie"):
-            raise RuntimeError("PAYMENTS_MODE must be simulation or nessie")
-        if self.payments_mode == "nessie" and not (self.nessie_api_key and self.nessie_card_account_id):
-            raise RuntimeError("PAYMENTS_MODE=nessie requires NESSIE_API_KEY and NESSIE_CARD_ACCOUNT_ID")
+        if self.payments_mode == "nessie":
+            if not self.nessie_api_key:
+                raise RuntimeError("PAYMENTS_MODE=nessie requires NESSIE_API_KEY")
+            if not (self.nessie_customer_id or self.nessie_card_account_id):
+                raise RuntimeError(
+                    "PAYMENTS_MODE=nessie requires NESSIE_CUSTOMER_ID (preferred) or NESSIE_CARD_ACCOUNT_ID"
+                )
+            if self.app_env == "production" and not self.nessie_merchant_id:
+                raise RuntimeError("Production Nessie mode requires NESSIE_MERCHANT_ID")
         if self.app_env == "production":
             if len(self.session_secret) < 32 or self.session_secret.startswith("local-"):
                 raise RuntimeError("Set a unique SESSION_SECRET of at least 32 characters")

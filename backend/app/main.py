@@ -12,10 +12,11 @@ from starlette.middleware.sessions import SessionMiddleware
 from .config import settings
 from .db import get_db
 from .models import (Product, Permission, Order, PriceObservation, Notification, Heartbeat,
-                     PaymentAuthorization, VirtualCard, utcnow)
+                     PaymentAuthorization, VirtualCard, BankCharge, utcnow)
 from . import payments
 from .payments import PaymentUnavailable
-from .schemas import Rules, ActivateRequest, ParseRequest, AssistantRequest, PriceChange, PermissionReference
+from .schemas import (Rules, ActivateRequest, ParseRequest, AssistantRequest, PriceChange,
+                      CreditLimitChange, PermissionReference)
 from .services import (serialize, product_view, permission_view, issue_card, void_card, prepare_order,
                        complete_order, cancel_order, cancel_deadline, resume_after_review, PurchaseRejected, total)
 
@@ -132,6 +133,25 @@ def payment_cards(user: str = Depends(owner), db: Session = Depends(get_db)):
     return [permission_view(permission, card) for permission, card in rows]
 
 
+@app.get("/api/payments/ledger")
+def payment_ledger(user: str = Depends(owner), db: Session = Depends(get_db)):
+    """DealOne bank-charge rows plus live Nessie sandbox transactions for this workspace."""
+    charges = list(db.scalars(select(BankCharge).join(Permission).where(Permission.owner == user)
+                              .order_by(BankCharge.created_at.desc())))
+    mapped = [{**serialize(c), "source": "dealone"} for c in charges]
+    live = []
+    if settings().payments_mode == "nessie":
+        account_ids = sorted({c.nessie_account_id for c in db.scalars(
+            select(VirtualCard).join(Permission).where(Permission.owner == user, VirtualCard.nessie_account_id.is_not(None)))
+            if c.nessie_account_id})
+        if account_ids:
+            try:
+                live = [{**row, "source": "nessie"} for row in payments.provider.ledger(account_ids)]
+            except PaymentUnavailable:
+                live = []
+    return {"charges": mapped, "nessie": live}
+
+
 @app.get("/api/products")
 def products(db: Session = Depends(get_db)):
     return [product_view(p) for p in db.scalars(select(Product).order_by(Product.id))]
@@ -201,7 +221,11 @@ def activate(permission_id: str, body: ActivateRequest | None = None, user: str 
         raise HTTPException(409, "Only an unexpired draft can be activated")
     permission.purchase_mode = body.purchase_mode
     permission.status = "active"
-    card = issue_card(db, permission)
+    try:
+        card = issue_card(db, permission)
+    except PaymentUnavailable as exc:
+        db.rollback()
+        raise HTTPException(503, f"Could not issue sandbox card: {exc}") from None
     db.commit()
     return permission_view(permission, card)
 
@@ -233,8 +257,10 @@ def orders(user: str = Depends(owner), db: Session = Depends(get_db)):
     results = []
     for o in db.scalars(select(Order).where(Order.owner == user).order_by(Order.created_at.desc())):
         authorization = db.get(PaymentAuthorization, o.id)
+        charge = db.get(BankCharge, o.id)
         open_window = o.status == "completed" and cancel_deadline(o) > utcnow()
         results.append({**serialize(o), "payment_reference": authorization.token if authorization else None,
+                        "bank_status": charge.status if charge else (authorization.status if authorization else None),
                         "cancellable_until": cancel_deadline(o) if open_window else None})
     return results
 
@@ -271,6 +297,61 @@ def change_price(product_id: str, body: PriceChange, db: Session = Depends(get_d
     return product_view(product)
 
 
+@app.post("/api/demo/nessie/seed", dependencies=[Depends(admin)])
+def demo_nessie_seed():
+    if settings().payments_mode != "nessie":
+        raise HTTPException(409, "Switch PAYMENTS_MODE to nessie before seeding the sandbox bank")
+    try:
+        return payments.provider.seed()
+    except PaymentUnavailable as exc:
+        raise HTTPException(503, str(exc)) from None
+
+
+@app.post("/api/demo/nessie/reset", dependencies=[Depends(admin)])
+def demo_nessie_reset(body: CreditLimitChange | None = None, user: str = Depends(owner),
+                      db: Session = Depends(get_db)):
+    if settings().payments_mode != "nessie":
+        raise HTTPException(409, "Nessie reset requires PAYMENTS_MODE=nessie")
+    body = body or CreditLimitChange(available_cents=0)
+    account_id = body.account_id
+    if body.permission_id:
+        card = db.get(VirtualCard, body.permission_id)
+        permission = db.get(Permission, body.permission_id)
+        if not card or not permission or permission.owner != user:
+            raise HTTPException(404, "Permission card not found")
+        account_id = card.nessie_account_id
+    if not account_id:
+        cards = list(db.scalars(select(VirtualCard).join(Permission).where(
+            Permission.owner == user, VirtualCard.nessie_account_id.is_not(None))))
+        account_id = cards[0].nessie_account_id if cards else settings().nessie_card_account_id
+    if not account_id:
+        raise HTTPException(404, "No Nessie account is linked yet. Activate a watch first.")
+    try:
+        return payments.provider.reset_account(account_id)
+    except PaymentUnavailable as exc:
+        raise HTTPException(503, str(exc)) from None
+
+
+@app.post("/api/demo/nessie/credit", dependencies=[Depends(admin)])
+def demo_nessie_credit(body: CreditLimitChange, user: str = Depends(owner), db: Session = Depends(get_db)):
+    """Lower available sandbox credit so a purchase can demonstrate a bank decline."""
+    if settings().payments_mode != "nessie":
+        raise HTTPException(409, "Nessie credit controls require PAYMENTS_MODE=nessie")
+    account_id = body.account_id
+    if body.permission_id:
+        card = db.get(VirtualCard, body.permission_id)
+        permission = db.get(Permission, body.permission_id)
+        if not card or not permission or permission.owner != user:
+            raise HTTPException(404, "Permission card not found")
+        account_id = card.nessie_account_id
+    if not account_id:
+        raise HTTPException(404, "No Nessie account is linked to that watch")
+    try:
+        return payments.provider.set_available_credit(account_id, body.available_cents)
+    except PaymentUnavailable as exc:
+        raise HTTPException(503, str(exc)) from None
+
+
 @app.get("/api/storefront/checkout/{order_id}", response_class=HTMLResponse, dependencies=[Depends(internal)])
 def checkout(order_id: str, db: Session = Depends(get_db)):
     order = db.get(Order, order_id)
@@ -292,6 +373,11 @@ def checkout(order_id: str, db: Session = Depends(get_db)):
 
 @app.post("/api/storefront/orders/{order_id}", dependencies=[Depends(internal)])
 def submit_storefront_order(order_id: str, db: Session = Depends(get_db)):
-    order = complete_order(db, order_id)
-    db.commit()
-    return serialize(order)
+    try:
+        order = complete_order(db, order_id)
+        db.commit()
+        return serialize(order)
+    except PurchaseRejected:
+        # Persist decline / validation side effects before returning the 409.
+        db.commit()
+        raise

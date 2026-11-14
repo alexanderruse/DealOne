@@ -49,6 +49,7 @@ type PermissionCard = {
   limit_cents: number;
   status: string;
   available_cents: number;
+  nessie_account_id?: string | null;
 };
 type Permission = {
   id: string;
@@ -70,6 +71,7 @@ type Order = {
   error: string | null;
   created_at: string;
   payment_reference?: string | null;
+  bank_status?: string | null;
   cancellable_until?: string | null;
 };
 type CardSummary = {
@@ -78,6 +80,16 @@ type CardSummary = {
   issued_count?: number;
   committed_limit_cents?: number;
 };
+type LedgerEntry = {
+  source: string;
+  transaction_id?: string;
+  status?: string;
+  amount_cents?: number;
+  description?: string;
+  account_id?: string;
+  created_at?: string;
+};
+type Ledger = { charges: LedgerEntry[]; nessie: LedgerEntry[] };
 type Notice = { id: string; message: string; created_at: string };
 type Observation = { price_cents: number; observed_at: string };
 type Rules = { product_id: string; max_total_cents: number; expires_at: string; quantity: 1 };
@@ -94,6 +106,7 @@ function App() {
   const [grok, setGrok] = useState(false);
   const [payments, setPayments] = useState('simulation');
   const [cardSummary, setCardSummary] = useState<CardSummary | null>(null);
+  const [ledger, setLedger] = useState<Ledger>({ charges: [], nessie: [] });
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Product | null>(null);
   const [budget, setBudget] = useState('180');
@@ -107,9 +120,12 @@ function App() {
   const [adminToken, setAdminToken] = useState('');
   const [demoPrice, setDemoPrice] = useState('159');
   const [demoProduct, setDemoProduct] = useState('headphones');
+  const [demoCredit, setDemoCredit] = useState('1');
+  const [demoCardPermission, setDemoCardPermission] = useState('');
   const [chat, setChat] = useState('');
   const [answer, setAnswer] = useState('');
   const [toolCalls, setToolCalls] = useState<string[]>([]);
+  const nessieCards = watches.filter((w) => w.card?.nessie_account_id);
 
   async function refresh() {
     const [p, w, o, n] = await Promise.all([
@@ -122,10 +138,13 @@ function App() {
     setWatches(w);
     setOrders(o);
     setNotices(n);
-    // Card summary is extra; a bank hiccup must never blank the rest of the page.
+    // Card summary / ledger are extra; a bank hiccup must never blank the rest of the page.
     api<CardSummary>('/payments/card')
       .then(setCardSummary)
       .catch(() => setCardSummary(null));
+    api<Ledger>('/payments/ledger')
+      .then(setLedger)
+      .catch(() => setLedger({ charges: [], nessie: [] }));
     const history = await Promise.all(
       p.map(
         async (product) =>
@@ -497,7 +516,7 @@ function App() {
                                     Reviewed, continue
                                   </Button>
                                 )}
-                                {['draft', 'active', 'paused'].includes(w.status) && (
+                                {['draft', 'active', 'paused', 'declined'].includes(w.status) && (
                                   <Button
                                     variant="ghost"
                                     onClick={() =>
@@ -634,11 +653,11 @@ function App() {
                       <div className="receipt" key={o.id}>
                         <span className={`status ${o.status}`}>{o.status}</span>
                         <strong>{money(o.total_cents)}</strong>
-                        <p>{o.confirmation || 'Awaiting confirmation'}</p>
+                        <p>{o.confirmation || (o.status === 'declined' ? 'Bank declined' : 'Awaiting confirmation')}</p>
                         <small>
                           {o.error ||
                             (o.payment_reference && !o.payment_reference.startsWith('sim_')
-                              ? `Nessie sandbox card · ${o.payment_reference}`
+                              ? `Nessie · ${o.payment_reference}${o.bank_status ? ` · ${o.bank_status}` : ''}`
                               : 'Simulated virtual card · one purchase')}
                         </small>
                         {o.cancellable_until && new Date(o.cancellable_until) > new Date() && (
@@ -661,6 +680,40 @@ function App() {
                         )}
                       </div>
                     ))}
+                  </section>
+                  <section className="panel ledger-panel">
+                    <h2>Bank ledger</h2>
+                    <p className="muted">
+                      {payments === 'nessie'
+                        ? 'DealOne charge map plus live Nessie sandbox transactions.'
+                        : 'Nessie ledger appears when PAYMENTS_MODE=nessie.'}
+                    </p>
+                    {ledger.charges.length === 0 && ledger.nessie.length === 0 ? (
+                      <p className="muted">No bank charges yet.</p>
+                    ) : (
+                      <>
+                        {ledger.charges.map((c) => (
+                          <div className="ledger-row" key={`local-${c.transaction_id}`}>
+                            <span className={`status ${c.status}`}>{c.status}</span>
+                            <strong>{money(c.amount_cents || 0)}</strong>
+                            <small>
+                              DealOne map · {c.transaction_id}
+                              {c.account_id ? ` · ${c.account_id}` : ''}
+                            </small>
+                          </div>
+                        ))}
+                        {ledger.nessie.map((c) => (
+                          <div className="ledger-row" key={`nessie-${c.transaction_id}`}>
+                            <span className={`status ${c.status}`}>{c.status}</span>
+                            <strong>{money(c.amount_cents || 0)}</strong>
+                            <small>
+                              Nessie · {c.description || c.transaction_id}
+                              {c.account_id ? ` · ${c.account_id}` : ''}
+                            </small>
+                          </div>
+                        ))}
+                      </>
+                    )}
                   </section>
                 </div>
               )}
@@ -983,6 +1036,86 @@ function App() {
                 Update demo price
               </Button>
             </form>
+            {payments === 'nessie' && (
+              <div className="demo-nessie">
+                <h3>Nessie sandbox</h3>
+                <p className="fineprint">
+                  Seed merchant/customer, force a bank decline, or reset a permission card’s holds.
+                </p>
+                <label htmlFor="demo-card">Permission card</label>
+                <select
+                  id="demo-card"
+                  value={demoCardPermission}
+                  onChange={(e) => setDemoCardPermission(e.target.value)}
+                >
+                  <option value="">Select a watch with a Nessie card</option>
+                  {nessieCards.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {products.find((p) => p.id === w.product_id)?.name || w.product_id} · ••••{' '}
+                      {w.card?.last4}
+                    </option>
+                  ))}
+                </select>
+                <label htmlFor="demo-credit">Available credit for decline demo (USD)</label>
+                <input
+                  id="demo-credit"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={demoCredit}
+                  onChange={(e) => setDemoCredit(e.target.value)}
+                />
+                <div className="demo-nessie-actions">
+                  <Button
+                    variant="outline"
+                    disabled={busy || !adminToken}
+                    onClick={() =>
+                      run(async () => {
+                        await api('/demo/nessie/seed', {
+                          method: 'POST',
+                          headers: { 'x-demo-admin-token': adminToken },
+                        });
+                      })
+                    }
+                  >
+                    Seed sandbox
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={busy || !adminToken || !demoCardPermission}
+                    onClick={() =>
+                      run(async () => {
+                        await api('/demo/nessie/credit', {
+                          method: 'POST',
+                          headers: { 'x-demo-admin-token': adminToken },
+                          body: JSON.stringify({
+                            permission_id: demoCardPermission,
+                            available_cents: Math.round(Number(demoCredit) * 100),
+                          }),
+                        });
+                      })
+                    }
+                  >
+                    Force low credit
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={busy || !adminToken || !demoCardPermission}
+                    onClick={() =>
+                      run(async () => {
+                        await api('/demo/nessie/reset', {
+                          method: 'POST',
+                          headers: { 'x-demo-admin-token': adminToken },
+                          body: JSON.stringify({ permission_id: demoCardPermission }),
+                        });
+                      })
+                    }
+                  >
+                    Reset card holds
+                  </Button>
+                </div>
+              </div>
+            )}
             {error && (
               <p role="alert" className="form-error">
                 {error}

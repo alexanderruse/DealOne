@@ -49,6 +49,7 @@ Browser → Traefik / HTTPS → React + Caddy → FastAPI
 - React, TypeScript, Vite, Tailwind, and a shadcn-style Radix/CVA button component.
 - FastAPI, Pydantic, SQLAlchemy, Alembic, and Psycopg 3.
 - Official `xai-sdk` for structured rules and bounded function calling. Grok cannot activate permissions, override limits, view payment credentials, or navigate a browser freely.
+- Payments default to simulation. With Nessie credentials, each activated watch mints a sandbox credit card capped at its budget; Activity shows the bank ledger; Demo controls can seed, reset, or force a decline.
 - Tiger Cloud in production; TimescaleDB in local Docker. Price observations use a hypertable. All money uses integer cents.
 - Two web and two API replicas, one worker with a Recreate update strategy, a load balancer, Traefik, and cert-manager in Kubernetes. Database storage stays in Tiger Cloud.
 - Separate API and browser-worker images share backend source. The worker installs Chromium matching its pinned Playwright package.

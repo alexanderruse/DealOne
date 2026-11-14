@@ -3,9 +3,9 @@ import secrets
 from .config import settings
 from sqlalchemy import select
 from .models import (Product, Permission, Order, MerchantOrder, PaymentAuthorization,
-                     PriceObservation, Notification, VirtualCard, utcnow)
+                     PriceObservation, Notification, VirtualCard, BankCharge, utcnow)
 from . import payments
-from .payments import PaymentDeclined
+from .payments import PaymentDeclined, PaymentUnavailable
 
 # Seller-listing bait used by the hidden-instruction demo product. Grok must treat it as data.
 HIDDEN_INSTRUCTION_BAIT = (
@@ -37,7 +37,8 @@ def card_view(card):
     if not card:
         return None
     return {"last4": card.last4, "limit_cents": card.limit_cents, "status": card.status,
-            "available_cents": card.limit_cents if card.status == "issued" else 0}
+            "available_cents": card.limit_cents if card.status == "issued" else 0,
+            "nessie_account_id": card.nessie_account_id}
 
 
 def permission_view(permission, card=None):
@@ -45,12 +46,20 @@ def permission_view(permission, card=None):
 
 
 def issue_card(db, permission):
-    """Mint a single-use virtual card capped at this permission's all-in maximum."""
+    """Mint a single-use virtual card capped at this permission's all-in maximum.
+
+    In Nessie mode this also creates (or links) a sandbox credit card with the same limit.
+    """
     existing = db.get(VirtualCard, permission.id)
     if existing:
         return existing
-    card = VirtualCard(permission_id=permission.id, last4=f"{secrets.randbelow(10000):04d}",
-                       limit_cents=permission.max_total_cents, status="issued")
+    last4 = f"{secrets.randbelow(10000):04d}"
+    nessie_account_id = None
+    if settings().payments_mode == "nessie":
+        nessie_account_id = payments.provider.create_card(
+            permission_id=permission.id, limit_cents=permission.max_total_cents, last4=last4)
+    card = VirtualCard(permission_id=permission.id, last4=last4, limit_cents=permission.max_total_cents,
+                       status="issued", nessie_account_id=nessie_account_id)
     db.add(card)
     db.flush()
     return card
@@ -61,6 +70,18 @@ def void_card(db, permission_id):
     if card and card.status == "issued":
         card.status = "voided"
     return card
+
+
+def mark_bank_decline(db, order, permission, reason):
+    """Surface a Nessie decline on the order and watchlist with a clear next step."""
+    order.status = "declined"
+    order.error = f"Card declined: {reason}"
+    order.updated_at = utcnow()
+    permission.status = "declined"
+    notify(db, order.owner, f"declined:{order.id}",
+           f"Bank declined the charge ({reason}). Cancel this watch or restore sandbox credit in Demo controls, "
+           "then create a new watch to try again.")
+    return order
 
 
 def validate_purchase(permission, product):
@@ -156,8 +177,11 @@ def complete_order(db, order_id):
     if charge > card.limit_cents:
         raise PurchaseRejected("Charge exceeds this permission's card limit")
     try:
-        payments.provider.authorize(db, order_id=order.id, merchant=product.seller, amount_cents=charge)
+        payments.provider.authorize(db, order_id=order.id, permission_id=permission.id,
+                                    account_id=card.nessie_account_id, merchant=product.seller,
+                                    amount_cents=charge)
     except PaymentDeclined as exc:
+        mark_bank_decline(db, order, permission, str(exc))
         raise PurchaseRejected(f"Card declined: {exc}") from None
     card.status = "spent"
     merchant = MerchantOrder(order_id=order.id, confirmation="DO-" + order.id[:8].upper(), total_cents=charge)
@@ -189,6 +213,9 @@ def cancel_order(db, order_id, owner):
     except PaymentDeclined as exc:
         raise PurchaseRejected(f"Too late to cancel: {exc}") from None
     authorization.status = "voided"
+    charge = db.get(BankCharge, order.id)
+    if charge:
+        charge.status = "cancelled"
     card = db.get(VirtualCard, permission.id)
     if card:
         card.status = "voided"
@@ -202,6 +229,29 @@ def cancel_order(db, order_id, owner):
     notify(db, order.owner, f"void:{order.id}",
            f"Purchase cancelled within the window. ${order.total_cents/100:.2f} was released; nothing was charged.")
     return order
+
+
+def settle_due_charges(db):
+    """After the cancel window, settle still-pending Nessie holds."""
+    settled = []
+    for authorization in db.scalars(select(PaymentAuthorization).where(PaymentAuthorization.status == "pending")):
+        order = db.get(Order, authorization.order_id)
+        if not order or order.status != "completed":
+            continue
+        if cancel_deadline(order) > utcnow():
+            continue
+        try:
+            payments.provider.settle(authorization.token)
+        except PaymentUnavailable:
+            continue
+        authorization.status = "settled"
+        charge = db.get(BankCharge, order.id)
+        if charge:
+            charge.status = "settled"
+        settled.append(order.id)
+        notify(db, order.owner, f"settled:{order.id}",
+               f"Cancel window closed. The sandbox bank settled ${order.total_cents/100:.2f}.")
+    return settled
 
 
 def resume_after_review(db, permission_id, owner):
