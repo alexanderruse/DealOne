@@ -234,6 +234,8 @@ def change_price(product_id: str, body: PriceChange, db: Session = Depends(get_d
     product = db.scalar(select(Product).where(Product.id == product_id).with_for_update())
     if not product:
         raise HTTPException(404, "Product not found")
+    if product.source_kind == "merchant":
+        raise HTTPException(409, "Real merchant prices can only change through the merchant feed")
     product.price_cents = body.price_cents
     if body.shipping_cents is not None:
         product.shipping_cents = body.shipping_cents

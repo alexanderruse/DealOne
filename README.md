@@ -87,3 +87,13 @@ Health endpoints: `/api/health/live`, `/api/health/ready`, `/api/health/worker`.
 - Notifications are in-app. Resend configuration is reserved for a later email opt-in feature; providing its key alone does not enable email delivery.
 - Grok needs a valid sponsor key, enabled model, and API credits; local automated tests do not consume API credits.
 - Public deployment, live Grok connectivity, and DNS/TLS require your configured accounts and credentials.
+
+### Real merchant catalog and product visuals
+
+The default **Real stores** view reads two Keychron product feeds (C3 Pro keyboard and M3 mouse). It displays the exact feed variant, product artwork, the merchant link, and the last successful price check. The worker refreshes these public feeds every five minutes. Prices are USD item prices, excluding shipping and tax. Failed refreshes retain the last timestamp; values older than 15 minutes do not trigger alerts. A new installation shows an honest empty state if the merchant is unavailable.
+
+Real listings support **price alerts and merchant checkout links**. They cannot enter the internal simulated checkout, charge a sandbox card, or accept a demo price override. The merchant confirms availability and the final total. **Practice checkout** retains the three original products for the browser purchase demonstration. Existing permissions and receipts remain unchanged.
+
+Grok searches product names, categories and merchants using `find_product`. Search results include actionable product visuals. A parsed change of item updates the watch form, image, icon and source link together, then requires review and activation. The interface uses a Capital One-inspired navy/blue/red palette while retaining DealOne branding.
+
+Set `REAL_CATALOG_ENABLED=false` to disable external catalog polling (used by CI). Additional stores require explicit adapters with fixed source URLs, currency/variant validation, and separately implemented checkout support.

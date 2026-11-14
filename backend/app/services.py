@@ -26,6 +26,8 @@ def product_view(product):
 
 
 def validate_purchase(permission, product):
+    if product.source_kind == "merchant":
+        raise PurchaseRejected("Live merchant checkout is not connected. Open the merchant listing to buy.")
     if permission.status != "active":
         raise PurchaseRejected("Purchase permission is not active")
     if permission.expires_at <= utcnow():
