@@ -12,12 +12,13 @@ from starlette.middleware.sessions import SessionMiddleware
 from .config import settings
 from .db import get_db
 from .models import (Product, Permission, Order, PriceObservation, Notification, Heartbeat,
-                     PaymentAuthorization, utcnow)
+                     PaymentAuthorization, VirtualCard, BankCharge, utcnow)
 from . import payments
 from .payments import PaymentUnavailable
-from .schemas import Rules, ParseRequest, AssistantRequest, PriceChange, PermissionReference
-from .services import (serialize, product_view, prepare_order, complete_order, cancel_order, cancel_deadline,
-                       resume_after_review, PurchaseRejected, total)
+from .schemas import (Rules, ActivateRequest, ParseRequest, AssistantRequest, PriceChange,
+                      CreditLimitChange, PermissionReference)
+from .services import (serialize, product_view, permission_view, issue_card, void_card, prepare_order,
+                       complete_order, cancel_order, cancel_deadline, resume_after_review, PurchaseRejected, total)
 
 
 @asynccontextmanager
@@ -105,11 +106,50 @@ def session(user: str = Depends(owner)):
 
 
 @app.get("/api/payments/card")
-def payment_card(user: str = Depends(owner)):
-    # Read-only view of the sandbox card the agent pays with. Never includes credentials.
-    if settings().payments_mode != "nessie":
-        return {"provider": "simulation"}
-    return {"provider": "nessie", **payments.provider.card()}
+def payment_card(user: str = Depends(owner), db: Session = Depends(get_db)):
+    # Backward-compatible summary. Prefer /api/payments/cards for per-permission cards.
+    cards = list(db.scalars(select(VirtualCard).join(Permission).where(Permission.owner == user)))
+    issued = [c for c in cards if c.status == "issued"]
+    summary = {
+        "provider": settings().payments_mode,
+        "card_count": len(cards),
+        "issued_count": len(issued),
+        "committed_limit_cents": sum(c.limit_cents for c in issued),
+    }
+    if settings().payments_mode == "nessie":
+        try:
+            summary["settlement"] = payments.provider.card()
+        except PaymentUnavailable:
+            summary["settlement"] = None
+    return summary
+
+
+@app.get("/api/payments/cards")
+def payment_cards(user: str = Depends(owner), db: Session = Depends(get_db)):
+    """One virtual card per permission. Never returns payment credentials."""
+    rows = db.execute(select(Permission, VirtualCard).outerjoin(
+        VirtualCard, VirtualCard.permission_id == Permission.id).where(Permission.owner == user)
+        .order_by(Permission.created_at.desc()))
+    return [permission_view(permission, card) for permission, card in rows]
+
+
+@app.get("/api/payments/ledger")
+def payment_ledger(user: str = Depends(owner), db: Session = Depends(get_db)):
+    """DealOne bank-charge rows plus live Nessie sandbox transactions for this workspace."""
+    charges = list(db.scalars(select(BankCharge).join(Permission).where(Permission.owner == user)
+                              .order_by(BankCharge.created_at.desc())))
+    mapped = [{**serialize(c), "source": "dealone"} for c in charges]
+    live = []
+    if settings().payments_mode == "nessie":
+        account_ids = sorted({c.nessie_account_id for c in db.scalars(
+            select(VirtualCard).join(Permission).where(Permission.owner == user, VirtualCard.nessie_account_id.is_not(None)))
+            if c.nessie_account_id})
+        if account_ids:
+            try:
+                live = [{**row, "source": "nessie"} for row in payments.provider.ledger(account_ids)]
+            except PaymentUnavailable:
+                live = []
+    return {"charges": mapped, "nessie": live}
 
 
 @app.get("/api/products")
@@ -155,27 +195,39 @@ def create_permission(body: Rules, user: str = Depends(owner), db: Session = Dep
         raise HTTPException(422, "Choose a timezone-aware expiration within the next 30 days")
     permission = Permission(owner=user, product_id=product.id, variant=product.variant, seller=product.seller,
                             condition=product.condition, currency=product.currency, quantity=body.quantity,
-                            max_total_cents=body.max_total_cents, expires_at=body.expires_at, status="draft")
+                            max_total_cents=body.max_total_cents, expires_at=body.expires_at,
+                            purchase_mode="ask_first", status="draft")
     db.add(permission)
     db.commit()
-    return serialize(permission)
+    return permission_view(permission)
 
 
 @app.get("/api/permissions")
 def permissions(user: str = Depends(owner), db: Session = Depends(get_db)):
-    return [serialize(p) for p in db.scalars(select(Permission).where(Permission.owner == user).order_by(Permission.created_at.desc()))]
+    rows = db.execute(select(Permission, VirtualCard).outerjoin(
+        VirtualCard, VirtualCard.permission_id == Permission.id).where(Permission.owner == user)
+        .order_by(Permission.created_at.desc()))
+    return [permission_view(permission, card) for permission, card in rows]
 
 
 @app.post("/api/permissions/{permission_id}/activate")
-def activate(permission_id: str, user: str = Depends(owner), db: Session = Depends(get_db)):
+def activate(permission_id: str, body: ActivateRequest | None = None, user: str = Depends(owner),
+             db: Session = Depends(get_db)):
+    body = body or ActivateRequest()
     permission = db.scalar(select(Permission).where(Permission.id == permission_id, Permission.owner == user).with_for_update())
     if not permission:
         raise HTTPException(404, "Permission not found")
     if permission.status != "draft" or permission.expires_at <= utcnow():
         raise HTTPException(409, "Only an unexpired draft can be activated")
+    permission.purchase_mode = body.purchase_mode
     permission.status = "active"
+    try:
+        card = issue_card(db, permission)
+    except PaymentUnavailable as exc:
+        db.rollback()
+        raise HTTPException(503, f"Could not issue sandbox card: {exc}") from None
     db.commit()
-    return serialize(permission)
+    return permission_view(permission, card)
 
 
 @app.post("/api/permissions/{permission_id}/cancel")
@@ -186,8 +238,9 @@ def cancel(permission_id: str, user: str = Depends(owner), db: Session = Depends
     if permission.status == "purchased":
         raise HTTPException(409, "Purchase already completed")
     permission.status = "cancelled"
+    void_card(db, permission.id)
     db.commit()
-    return serialize(permission)
+    return permission_view(permission, db.get(VirtualCard, permission.id))
 
 
 @app.post("/api/purchases", status_code=202)
@@ -204,8 +257,10 @@ def orders(user: str = Depends(owner), db: Session = Depends(get_db)):
     results = []
     for o in db.scalars(select(Order).where(Order.owner == user).order_by(Order.created_at.desc())):
         authorization = db.get(PaymentAuthorization, o.id)
+        charge = db.get(BankCharge, o.id)
         open_window = o.status == "completed" and cancel_deadline(o) > utcnow()
         results.append({**serialize(o), "payment_reference": authorization.token if authorization else None,
+                        "bank_status": charge.status if charge else (authorization.status if authorization else None),
                         "cancellable_until": cancel_deadline(o) if open_window else None})
     return results
 
@@ -221,7 +276,7 @@ def cancel_purchase(order_id: str, user: str = Depends(owner), db: Session = Dep
 def resume(permission_id: str, user: str = Depends(owner), db: Session = Depends(get_db)):
     permission = resume_after_review(db, permission_id, user)
     db.commit()
-    return serialize(permission)
+    return permission_view(permission, db.get(VirtualCard, permission.id))
 
 
 @app.get("/api/notifications")
@@ -242,6 +297,61 @@ def change_price(product_id: str, body: PriceChange, db: Session = Depends(get_d
     db.add(PriceObservation(product_id=product.id, price_cents=product.price_cents, total_cents=total(product)))
     db.commit()
     return product_view(product)
+
+
+@app.post("/api/demo/nessie/seed", dependencies=[Depends(admin)])
+def demo_nessie_seed():
+    if settings().payments_mode != "nessie":
+        raise HTTPException(409, "Switch PAYMENTS_MODE to nessie before seeding the sandbox bank")
+    try:
+        return payments.provider.seed()
+    except PaymentUnavailable as exc:
+        raise HTTPException(503, str(exc)) from None
+
+
+@app.post("/api/demo/nessie/reset", dependencies=[Depends(admin)])
+def demo_nessie_reset(body: CreditLimitChange | None = None, user: str = Depends(owner),
+                      db: Session = Depends(get_db)):
+    if settings().payments_mode != "nessie":
+        raise HTTPException(409, "Nessie reset requires PAYMENTS_MODE=nessie")
+    body = body or CreditLimitChange(available_cents=0)
+    account_id = body.account_id
+    if body.permission_id:
+        card = db.get(VirtualCard, body.permission_id)
+        permission = db.get(Permission, body.permission_id)
+        if not card or not permission or permission.owner != user:
+            raise HTTPException(404, "Permission card not found")
+        account_id = card.nessie_account_id
+    if not account_id:
+        cards = list(db.scalars(select(VirtualCard).join(Permission).where(
+            Permission.owner == user, VirtualCard.nessie_account_id.is_not(None))))
+        account_id = cards[0].nessie_account_id if cards else settings().nessie_card_account_id
+    if not account_id:
+        raise HTTPException(404, "No Nessie account is linked yet. Activate a watch first.")
+    try:
+        return payments.provider.reset_account(account_id)
+    except PaymentUnavailable as exc:
+        raise HTTPException(503, str(exc)) from None
+
+
+@app.post("/api/demo/nessie/credit", dependencies=[Depends(admin)])
+def demo_nessie_credit(body: CreditLimitChange, user: str = Depends(owner), db: Session = Depends(get_db)):
+    """Lower available sandbox credit so a purchase can demonstrate a bank decline."""
+    if settings().payments_mode != "nessie":
+        raise HTTPException(409, "Nessie credit controls require PAYMENTS_MODE=nessie")
+    account_id = body.account_id
+    if body.permission_id:
+        card = db.get(VirtualCard, body.permission_id)
+        permission = db.get(Permission, body.permission_id)
+        if not card or not permission or permission.owner != user:
+            raise HTTPException(404, "Permission card not found")
+        account_id = card.nessie_account_id
+    if not account_id:
+        raise HTTPException(404, "No Nessie account is linked to that watch")
+    try:
+        return payments.provider.set_available_credit(account_id, body.available_cents)
+    except PaymentUnavailable as exc:
+        raise HTTPException(503, str(exc)) from None
 
 
 @app.get("/api/storefront/checkout/{order_id}", response_class=HTMLResponse, dependencies=[Depends(internal)])
@@ -265,6 +375,11 @@ def checkout(order_id: str, db: Session = Depends(get_db)):
 
 @app.post("/api/storefront/orders/{order_id}", dependencies=[Depends(internal)])
 def submit_storefront_order(order_id: str, db: Session = Depends(get_db)):
-    order = complete_order(db, order_id)
-    db.commit()
-    return serialize(order)
+    try:
+        order = complete_order(db, order_id)
+        db.commit()
+        return serialize(order)
+    except PurchaseRejected:
+        # Persist decline / validation side effects before returning the 409.
+        db.commit()
+        raise

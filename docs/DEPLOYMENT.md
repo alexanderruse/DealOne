@@ -12,6 +12,7 @@ Open [repository Actions secrets](https://github.com/alexanderruse/DealOne/setti
 | `SESSION_SECRET` | A unique random value of at least 32 characters |
 | `DEMO_ADMIN_TOKEN` | A different unique random value of at least 24 characters |
 | `RESEND_API_KEY` | Optional; reserved for future email opt-in support |
+| `NESSIE_API_KEY` | Optional: Capital One Nessie v2 sandbox API key; enables `PAYMENTS_MODE=nessie` when a customer or card account is also set |
 | `PORKBUN_API_KEY` | Optional: Porkbun API key scoped to DNS management for `dealone.work` |
 | `PORKBUN_SECRET_API_KEY` | Optional: matching Porkbun secret API key; provide both to enable DNS automation |
 
@@ -28,6 +29,11 @@ Create these repository **Variables**:
 | `VULTR_CLUSTER_ID` | UUID of your existing Vultr Kubernetes cluster (`dealone-cluster`); use the cluster ID from its console URL or API, not its label or IP address |
 | `VULTR_REGISTRY_ENDPOINT` | Optional override; otherwise discovered from Vultr metadata, including the registry namespace |
 | `RESEND_FROM_EMAIL` | Optional; reserved for future email delivery |
+| `NESSIE_CUSTOMER_ID` | Optional but preferred for Nessie: sandbox customer used to mint one credit card per DealOne permission |
+| `NESSIE_CARD_ACCOUNT_ID` | Optional fallback shared Nessie card when per-permission minting is unavailable |
+| `NESSIE_MERCHANT_ID` | Required whenever Nessie is enabled in production; DealOne Demo Store merchant id |
+
+When `NESSIE_API_KEY` is set with `NESSIE_CUSTOMER_ID` or `NESSIE_CARD_ACCOUNT_ID`, deployment configures `PAYMENTS_MODE=nessie`. Production also requires `NESSIE_MERCHANT_ID`. Use Demo controls → **Seed sandbox** locally to create merchant/customer ids, then store them as secrets/variables. Each activated watch gets its own Nessie credit card capped at the watch budget; after the cancel window the worker settles pending charges.
 
 Domain `dealone.work`, region `ewr`, and registry UUID `369a6c53-fd50-4fe2-93d6-a151ec00c845` are already set in deployment code. `GITHUB_TOKEN` is supplied by GitHub. Kubeconfig, registry username, and registry password are obtained by the workflow; separate repository secrets are not needed.
 

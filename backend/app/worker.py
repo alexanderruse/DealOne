@@ -8,7 +8,7 @@ from sqlalchemy import select, text
 from .config import settings
 from .db import SessionLocal
 from .models import Permission, Product, Order, MerchantOrder, Heartbeat, PriceObservation, utcnow
-from .services import prepare_order, reconcile_order, notify, PurchaseRejected, total
+from .services import prepare_order, reconcile_order, notify, settle_due_charges, PurchaseRejected, total
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("dealone.worker")
@@ -43,6 +43,11 @@ def scan():
                     continue
                 if total(product) <= permission.max_total_cents:
                     prepare_order(db, permission.id)
+                else:
+                    # Ask-first: alert once; never purchase until the user explicitly approves.
+                    notify(db, permission.owner, f"offer:{permission.id}",
+                           f"Price matched your rules: {product.name} is ${total(product)/100:.2f} all in. "
+                           "Approve the purchase when you are ready.")
         except PurchaseRejected as exc:
             event("purchase_not_eligible", permission_id=permission_id, reason=str(exc))
 
@@ -96,6 +101,9 @@ def process_order(order_id):
                     merchant = db.get(MerchantOrder, order_id)
                     if merchant:
                         reconcile_order(db, order, merchant)
+                    elif order.status == "declined":
+                        # Storefront already recorded the bank decline; do not overwrite it.
+                        event("purchase_declined", order_id=order_id)
                     else:
                         # Unknown browser failures require review instead of blindly repeating payment.
                         order.status = "rejected" if isinstance(exc, PurchaseRejected) else "needs_action"
@@ -105,7 +113,7 @@ def process_order(order_id):
                         if permission.status == "active":
                             permission.status = "paused"
                         notify(db, order.owner, f"action:{order.id}", f"Purchase paused: {order.error}")
-                event("purchase_paused", order_id=order_id, reason=type(exc).__name__)
+                        event("purchase_paused", order_id=order_id, reason=type(exc).__name__)
         finally:
             lock_db.execute(text("SELECT pg_advisory_unlock(hashtextextended(:id, 0))"), {"id": order_id})
 
@@ -118,6 +126,11 @@ def tick():
         with SessionLocal.begin() as db:
             db.merge(Heartbeat(id="worker", updated_at=utcnow()))
         process_order(order_id)
+    with SessionLocal.begin() as db:
+        settled = settle_due_charges(db)
+        db.merge(Heartbeat(id="worker", updated_at=utcnow()))
+    for order_id in settled:
+        event("purchase_settled", order_id=order_id)
 
 
 def main():

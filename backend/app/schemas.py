@@ -14,6 +14,11 @@ class Rules(StrictModel):
     quantity: Literal[1] = 1
 
 
+class ActivateRequest(StrictModel):
+    # Default is ask-first: activation watches, it does not auto-buy.
+    purchase_mode: Literal["ask_first", "auto_buy"] = "ask_first"
+
+
 class ParseRequest(StrictModel):
     text: str = Field(min_length=5, max_length=2000)
 
@@ -37,3 +42,9 @@ class SearchRequest(StrictModel):
 class PriceChange(StrictModel):
     price_cents: int = Field(gt=0, le=1_000_000)
     shipping_cents: int | None = Field(default=None, ge=0, le=100_000)
+
+
+class CreditLimitChange(StrictModel):
+    available_cents: int = Field(default=0, ge=0, le=1_000_000)
+    permission_id: str | None = None
+    account_id: str | None = None

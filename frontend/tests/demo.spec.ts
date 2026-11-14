@@ -15,10 +15,14 @@ test('watch, authorize, detect a drop, and buy exactly once', async ({ page, req
   await page.getByLabel('Maximum total, including tax & shipping (USD)').fill('180');
   await page.getByRole('button', { name: 'Review purchase rules' }).click();
   await expect(page.getByRole('heading', { name: 'Your rules. Your call.' })).toBeVisible();
+  await page.getByLabel('Buy automatically').check();
   await page.getByRole('button', { name: 'Activate automatic purchase' }).click();
   await expect(
     page.locator('.watch-row').filter({ hasText: 'Studio Wireless Headphones' }),
   ).toContainText('active');
+  await expect(
+    page.locator('.watch-row').filter({ hasText: 'Studio Wireless Headphones' }),
+  ).toContainText('Card ••••');
   await request.post('/api/demo/products/headphones/price', {
     headers: { 'x-demo-admin-token': token },
     data: { price_cents: 15900 },

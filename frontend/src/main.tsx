@@ -10,6 +10,7 @@ import {
   ChevronRight,
   CircleHelp,
   Command,
+  CreditCard,
   Headphones,
   Keyboard,
   LayoutDashboard,
@@ -19,10 +20,12 @@ import {
   LockKeyhole,
   Plus,
   Radar,
+  ShieldAlert,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   TrendingDown,
+  Usb,
   Wallet,
   X,
 } from 'lucide-react';
@@ -54,6 +57,8 @@ type Permission = {
   status: string;
   variant: string;
   seller: string;
+  purchase_mode: 'ask_first' | 'auto_buy';
+  card?: PermissionCard | null;
 };
 type Order = {
   id: string;
@@ -64,9 +69,25 @@ type Order = {
   error: string | null;
   created_at: string;
   payment_reference?: string | null;
+  bank_status?: string | null;
   cancellable_until?: string | null;
 };
-type Card = { provider: string; credit_limit_cents?: number | null; available_cents?: number | null };
+type CardSummary = {
+  provider: string;
+  card_count?: number;
+  issued_count?: number;
+  committed_limit_cents?: number;
+};
+type LedgerEntry = {
+  source: string;
+  transaction_id?: string;
+  status?: string;
+  amount_cents?: number;
+  description?: string;
+  account_id?: string;
+  created_at?: string;
+};
+type Ledger = { charges: LedgerEntry[]; nessie: LedgerEntry[] };
 type Notice = { id: string; message: string; created_at: string };
 type Observation = { price_cents: number; observed_at: string };
 type Rules = { product_id: string; max_total_cents: number; expires_at: string; quantity: 1 };
@@ -93,7 +114,8 @@ function App() {
   const [error, setError] = useState('');
   const [grok, setGrok] = useState(false);
   const [payments, setPayments] = useState('simulation');
-  const [card, setCard] = useState<Card | null>(null);
+  const [cardSummary, setCardSummary] = useState<CardSummary | null>(null);
+  const [ledger, setLedger] = useState<Ledger>({ charges: [], nessie: [] });
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Product | null>(null);
   const [budget, setBudget] = useState('180');
@@ -101,14 +123,18 @@ function App() {
   const [parsedExpiration, setParsedExpiration] = useState<string | null>(null);
   const [prompt, setPrompt] = useState('');
   const [draft, setDraft] = useState<Permission | null>(null);
+  const [purchaseMode, setPurchaseMode] = useState<'ask_first' | 'auto_buy'>('ask_first');
   const [busy, setBusy] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminToken, setAdminToken] = useState('');
   const [demoPrice, setDemoPrice] = useState('159');
   const [demoProduct, setDemoProduct] = useState('headphones');
+  const [demoCredit, setDemoCredit] = useState('1');
+  const [demoCardPermission, setDemoCardPermission] = useState('');
   const [chat, setChat] = useState('');
   const [answer, setAnswer] = useState('');
   const [toolCalls, setToolCalls] = useState<string[]>([]);
+  const nessieCards = watches.filter((w) => w.card?.nessie_account_id);
 
   async function refresh() {
     const [p, w, o, n] = await Promise.all([
@@ -121,10 +147,13 @@ function App() {
     setWatches(w);
     setOrders(o);
     setNotices(n);
-    // The card view is extra; a bank hiccup must never blank the rest of the page.
-    api<Card>('/payments/card')
-      .then(setCard)
-      .catch(() => setCard(null));
+    // Card summary / ledger are extra; a bank hiccup must never blank the rest of the page.
+    api<CardSummary>('/payments/card')
+      .then(setCardSummary)
+      .catch(() => setCardSummary(null));
+    api<Ledger>('/payments/ledger')
+      .then(setLedger)
+      .catch(() => setLedger({ charges: [], nessie: [] }));
     const history = await Promise.all(
       p.map(
         async (product) =>
@@ -172,6 +201,7 @@ function App() {
     setDraft(null);
     setPrompt('');
     setParsedExpiration(null);
+    setPurchaseMode('ask_first');
   }
   async function saveDraft() {
     if (!selected) return;
@@ -237,14 +267,15 @@ function App() {
           <div className="autopilot">
             <ShieldCheck size={22} />
             <strong>Your rules. Always.</strong>
-            <p>Every purchase stays within the limits you approve.</p>
+            <p>Each watch gets its own virtual card and limit. Ask-first is the default.</p>
             <span>
-              <i /> {payments === 'nessie' ? 'Nessie sandbox card' : 'Simulated payments'}
+              <i /> {payments === 'nessie' ? 'Nessie settlement' : 'Simulated payments'}
             </span>
-            {card?.provider === 'nessie' && card.available_cents != null && (
+            {cardSummary?.issued_count != null && cardSummary.issued_count > 0 && (
               <p>
-                {money(card.available_cents)} available
-                {card.credit_limit_cents != null && ` of ${money(card.credit_limit_cents)}`}
+                {cardSummary.issued_count} active card
+                {cardSummary.issued_count === 1 ? '' : 's'} ·{' '}
+                {money(cardSummary.committed_limit_cents || 0)} committed
               </p>
             )}
           </div>
@@ -424,60 +455,89 @@ function App() {
                           <p>Create your first watch to get started.</p>
                         </div>
                       ) : (
-                        watches.map((w) => (
-                          <div className="watch-row" key={w.id}>
-                            <div>
-                              <strong>{products.find((p) => p.id === w.product_id)?.name}</strong>
-                              <small>{w.variant}</small>
+                        watches.map((w) => {
+                          const product = products.find((p) => p.id === w.product_id);
+                          const canBuy =
+                            w.status === 'active' &&
+                            product != null &&
+                            product.total_cents <= w.max_total_cents;
+                          return (
+                            <div className="watch-row" key={w.id}>
+                              <div>
+                                <strong>{product?.name}</strong>
+                                <small>{w.variant}</small>
+                                <small className="watch-meta">
+                                  {w.purchase_mode === 'auto_buy' ? 'Auto-buy' : 'Ask me first'}
+                                  {w.card
+                                    ? ` · Card •••• ${w.card.last4} · limit ${money(w.card.limit_cents)}`
+                                    : ''}
+                                </small>
+                              </div>
+                              <div>
+                                <small>All-in maximum</small>
+                                <strong>{money(w.max_total_cents)}</strong>
+                              </div>
+                              <span className={`status ${w.status}`}>{w.status}</span>
+                              <div className="row-actions">
+                                {w.status === 'draft' && (
+                                  <Button
+                                    disabled={busy}
+                                    onClick={() =>
+                                      run(async () => {
+                                        await api(`/permissions/${w.id}/activate`, {
+                                          method: 'POST',
+                                          body: JSON.stringify({ purchase_mode: 'ask_first' }),
+                                        });
+                                      })
+                                    }
+                                  >
+                                    Activate
+                                  </Button>
+                                )}
+                                {canBuy && (
+                                  <Button
+                                    disabled={busy}
+                                    onClick={() =>
+                                      run(async () => {
+                                        await api('/purchases', {
+                                          method: 'POST',
+                                          body: JSON.stringify({ permission_id: w.id }),
+                                        });
+                                      })
+                                    }
+                                  >
+                                    Approve purchase
+                                  </Button>
+                                )}
+                                {w.status === 'paused' && (
+                                  <Button
+                                    variant="outline"
+                                    disabled={busy}
+                                    onClick={() =>
+                                      run(async () => {
+                                        await api(`/permissions/${w.id}/resume`, { method: 'POST' });
+                                      })
+                                    }
+                                  >
+                                    Reviewed, continue
+                                  </Button>
+                                )}
+                                {['draft', 'active', 'paused', 'declined'].includes(w.status) && (
+                                  <Button
+                                    variant="ghost"
+                                    onClick={() =>
+                                      run(async () => {
+                                        await api(`/permissions/${w.id}/cancel`, { method: 'POST' });
+                                      })
+                                    }
+                                  >
+                                    Cancel
+                                  </Button>
+                                )}
+                              </div>
                             </div>
-                            <div>
-                              <small>All-in maximum</small>
-                              <strong>{money(w.max_total_cents)}</strong>
-                            </div>
-                            <span className={`status ${w.status}`}>{w.status}</span>
-                            <div className="row-actions">
-                              {w.status === 'draft' && (
-                                <Button
-                                  disabled={busy}
-                                  onClick={() =>
-                                    run(async () => {
-                                      await api(`/permissions/${w.id}/activate`, {
-                                        method: 'POST',
-                                      });
-                                    })
-                                  }
-                                >
-                                  Activate
-                                </Button>
-                              )}
-                              {w.status === 'paused' && (
-                                <Button
-                                  variant="outline"
-                                  disabled={busy}
-                                  onClick={() =>
-                                    run(async () => {
-                                      await api(`/permissions/${w.id}/resume`, { method: 'POST' });
-                                    })
-                                  }
-                                >
-                                  Reviewed, continue
-                                </Button>
-                              )}
-                              {['draft', 'active', 'paused'].includes(w.status) && (
-                                <Button
-                                  variant="ghost"
-                                  onClick={() =>
-                                    run(async () => {
-                                      await api(`/permissions/${w.id}/cancel`, { method: 'POST' });
-                                    })
-                                  }
-                                >
-                                  Cancel
-                                </Button>
-                              )}
-                            </div>
-                          </div>
-                        ))
+                          );
+                        })
                       )}
                     </div>
                   )}
@@ -522,6 +582,13 @@ function App() {
                             </span>
                             <h3>{p.name}</h3>
                             <p>{p.variant}</p>
+                            {p.contains_hidden_instructions && (
+                              <p className="trap-note">
+                                <ShieldAlert size={13} />
+                                Hidden-instruction demo — seller text tries to override your rules.
+                                The agent must treat it as data only.
+                              </p>
+                            )}
                             <div className="price">
                               <strong>{money(p.price_cents)}</strong>
                               {p.original_cents > p.price_cents && <del>{money(p.original_cents)}</del>}
@@ -608,11 +675,11 @@ function App() {
                       <div className="receipt" key={o.id}>
                         <span className={`status ${o.status}`}>{o.status}</span>
                         <strong>{money(o.total_cents)}</strong>
-                        <p>{o.confirmation || 'Awaiting confirmation'}</p>
+                        <p>{o.confirmation || (o.status === 'declined' ? 'Bank declined' : 'Awaiting confirmation')}</p>
                         <small>
                           {o.error ||
                             (o.payment_reference && !o.payment_reference.startsWith('sim_')
-                              ? `Nessie sandbox card · ${o.payment_reference}`
+                              ? `Nessie · ${o.payment_reference}${o.bank_status ? ` · ${o.bank_status}` : ''}`
                               : 'Simulated virtual card · one purchase')}
                         </small>
                         {o.cancellable_until && new Date(o.cancellable_until) > new Date() && (
@@ -635,6 +702,40 @@ function App() {
                         )}
                       </div>
                     ))}
+                  </section>
+                  <section className="panel ledger-panel">
+                    <h2>Bank ledger</h2>
+                    <p className="muted">
+                      {payments === 'nessie'
+                        ? 'DealOne charge map plus live Nessie sandbox transactions.'
+                        : 'Nessie ledger appears when PAYMENTS_MODE=nessie.'}
+                    </p>
+                    {ledger.charges.length === 0 && ledger.nessie.length === 0 ? (
+                      <p className="muted">No bank charges yet.</p>
+                    ) : (
+                      <>
+                        {ledger.charges.map((c) => (
+                          <div className="ledger-row" key={`local-${c.transaction_id}`}>
+                            <span className={`status ${c.status}`}>{c.status}</span>
+                            <strong>{money(c.amount_cents || 0)}</strong>
+                            <small>
+                              DealOne map · {c.transaction_id}
+                              {c.account_id ? ` · ${c.account_id}` : ''}
+                            </small>
+                          </div>
+                        ))}
+                        {ledger.nessie.map((c) => (
+                          <div className="ledger-row" key={`nessie-${c.transaction_id}`}>
+                            <span className={`status ${c.status}`}>{c.status}</span>
+                            <strong>{money(c.amount_cents || 0)}</strong>
+                            <small>
+                              Nessie · {c.description || c.transaction_id}
+                              {c.account_id ? ` · ${c.account_id}` : ''}
+                            </small>
+                          </div>
+                        ))}
+                      </>
+                    )}
                   </section>
                 </div>
               )}
@@ -693,8 +794,9 @@ function App() {
                     </div>)}
                   </div>}
                   <p className="fineprint">
-                    Grok can request purchases only under rules you have already activated. Payments
-                    in this preview are simulated.
+                    Grok can request purchases only under rules you have already activated. Product
+                    text is never treated as instructions — try the USB-C Hub demo item. Payments in
+                    this preview are simulated.
                   </p>
                 </section>
               )}
@@ -753,6 +855,33 @@ function App() {
                     <strong>{new Date(draft.expires_at).toLocaleString()}</strong>
                   </div>
                 </div>
+                <fieldset className="mode-picker">
+                  <legend>When the price matches</legend>
+                  <label className={purchaseMode === 'ask_first' ? 'selected' : ''}>
+                    <input
+                      type="radio"
+                      name="purchase-mode"
+                      checked={purchaseMode === 'ask_first'}
+                      onChange={() => setPurchaseMode('ask_first')}
+                    />
+                    <span>
+                      <strong>Ask me first</strong>
+                      <small>Notify me. I approve before any purchase.</small>
+                    </span>
+                  </label>
+                  <label className={purchaseMode === 'auto_buy' ? 'selected' : ''}>
+                    <input
+                      type="radio"
+                      name="purchase-mode"
+                      checked={purchaseMode === 'auto_buy'}
+                      onChange={() => setPurchaseMode('auto_buy')}
+                    />
+                    <span>
+                      <strong>Buy automatically</strong>
+                      <small>One purchase when every rule matches.</small>
+                    </span>
+                  </label>
+                </fieldset>
                 <p className="fineprint">
                   {selected.source_kind === 'merchant' ? 'Activate to monitor this item and receive price alerts. The merchant confirms taxes, shipping and availability before you purchase.' : 'Activating lets DealOne automatically complete one simulated purchase when every rule matches. Tax and shipping must fit your maximum.'}
                 </p>
@@ -761,7 +890,10 @@ function App() {
                   disabled={busy}
                   onClick={() =>
                     run(async () => {
-                      await api(`/permissions/${draft.id}/activate`, { method: 'POST' });
+                      await api(`/permissions/${draft.id}/activate`, {
+                        method: 'POST',
+                        body: JSON.stringify({ purchase_mode: purchaseMode }),
+                      });
                       setSelected(null);
                       setPage('Watchlist');
                     })
@@ -938,6 +1070,86 @@ function App() {
                 Update demo price
               </Button>
             </form>
+            {payments === 'nessie' && (
+              <div className="demo-nessie">
+                <h3>Nessie sandbox</h3>
+                <p className="fineprint">
+                  Seed merchant/customer, force a bank decline, or reset a permission card’s holds.
+                </p>
+                <label htmlFor="demo-card">Permission card</label>
+                <select
+                  id="demo-card"
+                  value={demoCardPermission}
+                  onChange={(e) => setDemoCardPermission(e.target.value)}
+                >
+                  <option value="">Select a watch with a Nessie card</option>
+                  {nessieCards.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {products.find((p) => p.id === w.product_id)?.name || w.product_id} · ••••{' '}
+                      {w.card?.last4}
+                    </option>
+                  ))}
+                </select>
+                <label htmlFor="demo-credit">Available credit for decline demo (USD)</label>
+                <input
+                  id="demo-credit"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={demoCredit}
+                  onChange={(e) => setDemoCredit(e.target.value)}
+                />
+                <div className="demo-nessie-actions">
+                  <Button
+                    variant="outline"
+                    disabled={busy || !adminToken}
+                    onClick={() =>
+                      run(async () => {
+                        await api('/demo/nessie/seed', {
+                          method: 'POST',
+                          headers: { 'x-demo-admin-token': adminToken },
+                        });
+                      })
+                    }
+                  >
+                    Seed sandbox
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={busy || !adminToken || !demoCardPermission}
+                    onClick={() =>
+                      run(async () => {
+                        await api('/demo/nessie/credit', {
+                          method: 'POST',
+                          headers: { 'x-demo-admin-token': adminToken },
+                          body: JSON.stringify({
+                            permission_id: demoCardPermission,
+                            available_cents: Math.round(Number(demoCredit) * 100),
+                          }),
+                        });
+                      })
+                    }
+                  >
+                    Force low credit
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={busy || !adminToken || !demoCardPermission}
+                    onClick={() =>
+                      run(async () => {
+                        await api('/demo/nessie/reset', {
+                          method: 'POST',
+                          headers: { 'x-demo-admin-token': adminToken },
+                          body: JSON.stringify({ permission_id: demoCardPermission }),
+                        });
+                      })
+                    }
+                  >
+                    Reset card holds
+                  </Button>
+                </div>
+              </div>
+            )}
             {error && (
               <p role="alert" className="form-error">
                 {error}

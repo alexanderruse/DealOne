@@ -50,17 +50,21 @@ def test_cancel_is_refused_after_the_window_and_for_other_users(db):
 
 def test_cancel_voids_the_pending_nessie_charge(db, nessie):
     permission, order = bought(db)
+    from app.models import VirtualCard
+    account_id = db.get(VirtualCard, permission.id).nessie_account_id
     assert not any(path.endswith("/settle") for _, path, _ in nessie.requests)
-    assert nessie.transactions[0]["status"] == "pending"
+    assert nessie.transactions[account_id][0]["status"] == "pending"
     cancel_order(db, order.id, "owner")
     db.commit()
-    assert nessie.transactions[0]["status"] == "cancelled"
+    assert nessie.transactions[account_id][0]["status"] == "cancelled"
     assert db.get(Order, order.id).status == "cancelled"
 
 
 def test_cancel_after_the_bank_settled_changes_nothing(db, nessie):
     permission, order = bought(db)
-    nessie.transactions[0]["status"] = "completed"
+    from app.models import VirtualCard
+    account_id = db.get(VirtualCard, permission.id).nessie_account_id
+    nessie.transactions[account_id][0]["status"] = "completed"
     with pytest.raises(PurchaseRejected, match="Too late"):
         cancel_order(db, order.id, "owner")
     db.rollback()

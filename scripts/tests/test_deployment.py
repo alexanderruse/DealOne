@@ -35,8 +35,16 @@ class DeploymentTests(unittest.TestCase):
             self.assertNotIn('VULTR_API_KEY',secret)
             self.assertEqual(config['PAYMENTS_MODE'],'simulation')
             self.assertEqual(config['APP_DOMAIN'],'dealone.work')
-        env['DATABASE_URL']='postgresql+psycopg://user:password@host/db?sslmode=disable'
-        with patch.dict(os.environ, env, clear=True), self.assertRaises(RuntimeError):
+        bad = {**env, "DATABASE_URL": "postgresql+psycopg://user:password@host/db?sslmode=disable"}
+        with patch.dict(os.environ, bad, clear=True), self.assertRaises(RuntimeError):
+            deploy.runtime_config()
+        nessie = {**env, "NESSIE_API_KEY": "nsk", "NESSIE_CUSTOMER_ID": "cust", "NESSIE_MERCHANT_ID": "mer"}
+        with patch.dict(os.environ, nessie, clear=True):
+            _, config = deploy.runtime_config()
+            self.assertEqual(config['PAYMENTS_MODE'], 'nessie')
+            self.assertEqual(config['NESSIE_CUSTOMER_ID'], 'cust')
+        incomplete = {**env, "NESSIE_API_KEY": "nsk", "NESSIE_CUSTOMER_ID": "cust"}
+        with patch.dict(os.environ, incomplete, clear=True), self.assertRaises(RuntimeError):
             deploy.runtime_config()
 
     def test_quote_never_creates_cluster(self):
