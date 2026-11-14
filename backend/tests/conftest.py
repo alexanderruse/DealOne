@@ -35,6 +35,13 @@ def clean_database(factory):
         seed(db)
 
 
+@pytest.fixture(autouse=True)
+def simulated_payments(monkeypatch):
+    """Tests never touch a real bank, whatever PAYMENTS_MODE the container was started with."""
+    from app import payments
+    monkeypatch.setattr(payments, "provider", payments.SimulatedVirtualCardProvider())
+
+
 @pytest.fixture
 def db(factory):
     with factory() as db:

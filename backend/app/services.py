@@ -1,4 +1,5 @@
 from datetime import timedelta
+from .config import settings
 from sqlalchemy import select
 from .models import (Product, Permission, Order, MerchantOrder, PaymentAuthorization,
                      PriceObservation, Notification, utcnow)
@@ -40,6 +41,28 @@ def validate_purchase(permission, product):
         raise PurchaseRejected("Final total including tax and shipping exceeds your budget")
 
 
+def price_baseline(db, product_id):
+    """Median all-in price over the last 30 days, ignoring the most recent hour.
+
+    The seller's claimed discount is never used: a deal is judged against prices we observed.
+    """
+    now = utcnow()
+    totals = sorted(db.scalars(select(PriceObservation.total_cents).where(
+        PriceObservation.product_id == product_id,
+        PriceObservation.observed_at >= now - timedelta(days=30),
+        PriceObservation.observed_at < now - timedelta(hours=1))))
+    return totals[len(totals) // 2] if len(totals) >= 5 else None
+
+
+def too_good_to_be_true(db, product):
+    baseline = price_baseline(db, product.id)
+    return baseline is not None and total(product) * 2 < baseline
+
+
+def reviewed_key(permission_id):
+    return f"reviewed:{permission_id}"
+
+
 def notify(db, owner, key, message):
     if not db.scalar(select(Notification).where(Notification.owner == owner, Notification.event_key == key)):
         db.add(Notification(owner=owner, event_key=key, message=message))
@@ -54,6 +77,15 @@ def prepare_order(db, permission_id, owner=None):
         return existing
     product = db.get(Product, permission.product_id)
     validate_purchase(permission, product)
+    reviewed = db.scalar(select(Notification).where(Notification.owner == permission.owner,
+                                                    Notification.event_key == reviewed_key(permission.id)))
+    if not reviewed and too_good_to_be_true(db, product):
+        # Applies to every caller, including Grok's tool. Only the user can clear it.
+        permission.status = "paused"
+        notify(db, permission.owner, f"suspicious:{permission.id}",
+               f"Paused for your review: {product.name} is ${total(product)/100:.2f}, less than half its usual "
+               "price. Deals this far below the tracked price can be scams.")
+        return None
     order = Order(permission_id=permission.id, owner=permission.owner, total_cents=total(product))
     db.add(order)
     db.flush()
@@ -88,6 +120,57 @@ def complete_order(db, order_id):
     product.stock -= 1
     db.flush()
     return reconcile_order(db, order, merchant)
+
+
+def cancel_deadline(order):
+    return order.updated_at + timedelta(seconds=settings().cancel_window_seconds)
+
+
+def cancel_order(db, order_id, owner):
+    """Void a just-completed purchase while the bank still holds it as pending."""
+    reference = db.get(Order, order_id)
+    if not reference or reference.owner != owner:
+        raise PurchaseRejected("Order not found")
+    permission = db.scalar(select(Permission).where(Permission.id == reference.permission_id).with_for_update())
+    order = db.scalar(select(Order).where(Order.id == order_id).with_for_update())
+    if order.status != "completed":
+        raise PurchaseRejected("Only a completed purchase can be cancelled")
+    if cancel_deadline(order) <= utcnow():
+        raise PurchaseRejected("The cancellation window has closed")
+    product = db.scalar(select(Product).where(Product.id == permission.product_id).with_for_update())
+    authorization = db.get(PaymentAuthorization, order.id)
+    try:
+        payments.provider.void(authorization.token)
+    except PaymentDeclined as exc:
+        raise PurchaseRejected(f"Too late to cancel: {exc}") from None
+    authorization.status = "voided"
+    merchant = db.get(MerchantOrder, order.id)
+    if merchant:
+        db.delete(merchant)
+    product.stock += 1
+    order.status = "cancelled"
+    order.updated_at = utcnow()
+    permission.status = "cancelled"
+    notify(db, order.owner, f"void:{order.id}",
+           f"Purchase cancelled within the window. ${order.total_cents/100:.2f} was released; nothing was charged.")
+    return order
+
+
+def resume_after_review(db, permission_id, owner):
+    """The user looked at a flagged price and chose to continue. Recorded as an audit entry."""
+    permission = db.scalar(select(Permission).where(Permission.id == permission_id,
+                                                    Permission.owner == owner).with_for_update())
+    if not permission:
+        raise PurchaseRejected("Permission not found")
+    flagged = db.scalar(select(Notification).where(Notification.owner == owner,
+                                                   Notification.event_key == f"suspicious:{permission.id}"))
+    if permission.status != "paused" or not flagged:
+        raise PurchaseRejected("Only a watch paused for price review can be resumed")
+    if permission.expires_at <= utcnow():
+        raise PurchaseRejected("Purchase permission has expired")
+    permission.status = "active"
+    notify(db, owner, reviewed_key(permission.id), "You reviewed the unusually low price and chose to continue.")
+    return permission
 
 
 def reconcile_order(db, order, merchant):

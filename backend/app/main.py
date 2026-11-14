@@ -16,8 +16,8 @@ from .models import (Product, Permission, Order, PriceObservation, Notification,
 from . import payments
 from .payments import PaymentUnavailable
 from .schemas import Rules, ParseRequest, AssistantRequest, PriceChange, PermissionReference
-from .services import (serialize, product_view, prepare_order, complete_order,
-                       PurchaseRejected, total)
+from .services import (serialize, product_view, prepare_order, complete_order, cancel_order, cancel_deadline,
+                       resume_after_review, PurchaseRejected, total)
 
 
 @asynccontextmanager
@@ -194,6 +194,8 @@ def cancel(permission_id: str, user: str = Depends(owner), db: Session = Depends
 def purchase(body: PermissionReference, user: str = Depends(owner), db: Session = Depends(get_db)):
     order = prepare_order(db, body.permission_id, user)
     db.commit()
+    if order is None:
+        raise HTTPException(409, "Paused for review: the price is unusually low. Review it in your watchlist.")
     return serialize(order)
 
 
@@ -202,8 +204,24 @@ def orders(user: str = Depends(owner), db: Session = Depends(get_db)):
     results = []
     for o in db.scalars(select(Order).where(Order.owner == user).order_by(Order.created_at.desc())):
         authorization = db.get(PaymentAuthorization, o.id)
-        results.append({**serialize(o), "payment_reference": authorization.token if authorization else None})
+        open_window = o.status == "completed" and cancel_deadline(o) > utcnow()
+        results.append({**serialize(o), "payment_reference": authorization.token if authorization else None,
+                        "cancellable_until": cancel_deadline(o) if open_window else None})
     return results
+
+
+@app.post("/api/orders/{order_id}/cancel")
+def cancel_purchase(order_id: str, user: str = Depends(owner), db: Session = Depends(get_db)):
+    order = cancel_order(db, order_id, user)
+    db.commit()
+    return serialize(order)
+
+
+@app.post("/api/permissions/{permission_id}/resume")
+def resume(permission_id: str, user: str = Depends(owner), db: Session = Depends(get_db)):
+    permission = resume_after_review(db, permission_id, user)
+    db.commit()
+    return serialize(permission)
 
 
 @app.get("/api/notifications")

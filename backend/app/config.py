@@ -24,12 +24,17 @@ class Settings(BaseSettings):
     nessie_card_account_id: str = ""
     nessie_merchant_id: str = ""
     nessie_settle_immediately: bool = True
+    cancel_window_seconds: int = 50
 
     @property
     def worker_token(self) -> str:
         return hmac.new(self.session_secret.encode(), b"dealone-internal-worker", hashlib.sha256).hexdigest()
 
     def validate_runtime(self):
+        if self.payments_mode not in ("simulation", "nessie"):
+            raise RuntimeError("PAYMENTS_MODE must be simulation or nessie")
+        if self.payments_mode == "nessie" and not (self.nessie_api_key and self.nessie_card_account_id):
+            raise RuntimeError("PAYMENTS_MODE=nessie requires NESSIE_API_KEY and NESSIE_CARD_ACCOUNT_ID")
         if self.payments_mode not in ("simulation", "nessie"):
             raise RuntimeError("PAYMENTS_MODE must be simulation or nessie")
         if self.payments_mode == "nessie" and not (self.nessie_api_key and self.nessie_card_account_id):

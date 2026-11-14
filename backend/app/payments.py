@@ -23,6 +23,8 @@ class PaymentUnavailable(RuntimeError):
 class PaymentProvider(Protocol):
     def authorize(self, db, *, order_id: str, merchant: str, amount_cents: int) -> PaymentAuthorization: ...
 
+    def void(self, token: str) -> None: ...
+
 
 class SimulatedVirtualCardProvider:
     def authorize(self, db, *, order_id: str, merchant: str, amount_cents: int) -> PaymentAuthorization:
@@ -34,6 +36,9 @@ class SimulatedVirtualCardProvider:
         db.add(authorization)
         db.flush()
         return authorization
+
+    def void(self, token: str) -> None:
+        return None
 
 
 def _items(payload):
@@ -107,7 +112,7 @@ class NessieProvider:
                         raise PaymentDeclined(reason)
                     response.raise_for_status()
                     tx = response.json()
-                    if settings().nessie_settle_immediately:
+                    if settings().nessie_settle_immediately and settings().cancel_window_seconds <= 0:
                         # Skips the pending window for the demo. Best effort: it settles on its own anyway.
                         try:
                             client.post(f"/transactions/{tx['id']}/settle")
@@ -123,6 +128,19 @@ class NessieProvider:
         db.flush()
         return authorization
 
+    def void(self, token: str) -> None:
+        """Cancel a still-pending charge. Nessie releases the hold on the card."""
+        try:
+            with self._client() as client:
+                response = client.post(f"/transactions/{token}/cancel")
+                if response.status_code in (409, 422):
+                    raise PaymentDeclined("the charge has already settled")
+                response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise PaymentUnavailable(f"Nessie returned HTTP {exc.response.status_code}") from None
+        except httpx.HTTPError as exc:
+            raise PaymentUnavailable(f"Nessie request failed: {type(exc).__name__}") from None
+
     def card(self) -> dict:
         """Current state of the sandbox card, for display."""
         try:
@@ -130,6 +148,8 @@ class NessieProvider:
                 response = client.get(f"/accounts/{settings().nessie_card_account_id}")
                 response.raise_for_status()
                 account = response.json()
+        except httpx.HTTPStatusError as exc:
+            raise PaymentUnavailable(f"Nessie returned HTTP {exc.response.status_code}") from None
         except httpx.HTTPError as exc:
             raise PaymentUnavailable(f"Nessie request failed: {type(exc).__name__}") from None
         return {key: account.get(key) for key in
