@@ -1,0 +1,30 @@
+name: Synchronize Porkbun DNS
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: dealone-production
+  cancel-in-progress: false
+jobs:
+  synchronize:
+    if: vars.VULTR_CLUSTER_ID != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+      VULTR_CLUSTER_ID: ${{ vars.VULTR_CLUSTER_ID }}
+      KUBECONFIG: /tmp/dealone.kubeconfig
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-kubectl@v4
+      - name: Connect to cluster
+        run: python3 scripts/vultr.py kubeconfig
+      - name: Synchronize website DNS
+        env:
+          PORKBUN_API_KEY: ${{ secrets.PORKBUN_API_KEY }}
+          PORKBUN_SECRET_API_KEY: ${{ secrets.PORKBUN_SECRET_API_KEY }}
+        run: python3 scripts/dns.py --apply
+      - name: Remove cluster credentials
+        if: always()
+        run: rm -f "$KUBECONFIG"

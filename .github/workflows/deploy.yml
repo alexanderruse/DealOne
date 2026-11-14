@@ -70,6 +70,11 @@ jobs:
           python3 scripts/vultr.py kubeconfig
           kubectl apply -f infra/k8s/namespace.yaml
           python3 scripts/vultr.py registry-pull
+      - name: Synchronize Porkbun domain with load balancer
+        env:
+          PORKBUN_API_KEY: ${{ secrets.PORKBUN_API_KEY }}
+          PORKBUN_SECRET_API_KEY: ${{ secrets.PORKBUN_SECRET_API_KEY }}
+        run: python3 scripts/dns.py --apply
       - name: Migrate and roll out
         env:
           ENDPOINT: ${{ steps.registry.outputs.endpoint }}

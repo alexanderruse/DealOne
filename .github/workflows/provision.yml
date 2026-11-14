@@ -53,6 +53,12 @@ jobs:
           python3 scripts/vultr.py kubeconfig
           python3 scripts/bootstrap.py
           echo "Set repository variable VULTR_CLUSTER_ID=$VULTR_CLUSTER_ID" >> "$GITHUB_STEP_SUMMARY"
+      - name: Synchronize Porkbun domain with load balancer
+        if: inputs.operation == 'provision'
+        env:
+          PORKBUN_API_KEY: ${{ secrets.PORKBUN_API_KEY }}
+          PORKBUN_SECRET_API_KEY: ${{ secrets.PORKBUN_SECRET_API_KEY }}
+        run: python3 scripts/dns.py --apply
       - name: Remove local cluster credentials
         if: always()
         run: rm -f "$KUBECONFIG"

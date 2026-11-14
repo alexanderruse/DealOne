@@ -12,6 +12,8 @@ Open [repository Actions secrets](https://github.com/alexanderruse/DealOne/setti
 | `SESSION_SECRET` | A unique random value of at least 32 characters |
 | `DEMO_ADMIN_TOKEN` | A different unique random value of at least 24 characters |
 | `RESEND_API_KEY` | Optional; reserved for future email opt-in support |
+| `PORKBUN_API_KEY` | Optional: Porkbun API key scoped to DNS management for `dealone.work` |
+| `PORKBUN_SECRET_API_KEY` | Optional: matching Porkbun secret API key; provide both to enable DNS automation |
 
 URL-encode special characters in database usernames/passwords. Use a dedicated database/schema and a migration-capable Tiger Cloud user; the initial migration creates tables and enables TimescaleDB if needed. The app refuses non-TLS production database connections. Use `sslmode=verify-full` with your provider's CA configuration when available.
 
@@ -41,7 +43,19 @@ The public catalog checked on November 14, 2026 lists `voc-c-2c-4gb-50s-amd` as 
 
 The workflow waits for the cluster, installs pinned Traefik and cert-manager charts, and prints the cluster ID and load-balancer service. Set `VULTR_CLUSTER_ID` in repository Variables. If creation succeeded but ingress installation failed, rerun provisioning to reuse the cluster and finish setup.
 
-The load balancer appears under namespace `traefik`, service `traefik`. Set your registrar's **A record for `@` / `dealone.work`** to its external IP. Remove stale A/AAAA records pointing elsewhere. Keep ports 80 and 443 reachable; cert-manager uses HTTP-01 validation. No `www` hostname is configured.
+### Automatic Porkbun DNS
+
+Create a key at [Porkbun API Access](https://porkbun.com/account/api), restrict it to `dealone.work` and DNS read/write access (no purchase permissions needed), and enable **API Access** in the domain's Details screen. Add both Porkbun secrets listed above to GitHub.
+
+Provisioning now waits for Traefik's public IPv4, checks that Porkbun is authoritative, and synchronizes the root A record automatically. Existing root parking ALIAS/CNAME records are converted in place; duplicate root A records and stale root AAAA records are removed after the new IPv4 is configured. MX, TXT, CAA, and subdomain records are preserved. Repeating synchronization with the same IP performs no writes. The keys are used only by GitHub Actions, never placed in application pods.
+
+Every application deployment repeats synchronization, so an ingress load balancer replaced between deployments gets its new address published. **Actions → Synchronize Porkbun DNS** can also refresh the existing cluster's address without rebuilding the app. This is workflow-driven synchronization, not continuous monitoring of manual cloud changes.
+
+If both keys are absent, the workflow prints manual instructions instead. If only one is present, credentials are rejected, or Porkbun is not authoritative, it fails instead of reporting a successful DNS update. Read-only preview: `python3 scripts/dns.py --ip YOUR_LOAD_BALANCER_IPV4`; add `--apply` to apply the displayed plan. Without `--ip`, the script discovers Traefik's address through your current kubeconfig.
+
+Public DNS resolvers may cache the old address until its previous TTL expires. An update verified through Porkbun does not mean every public resolver has refreshed immediately; re-run deployment after propagation if the HTTPS smoke check times out.
+
+For manual setup, the load balancer appears under namespace `traefik`, service `traefik`. Set your registrar's **root A record** (blank Host at Porkbun, `@` at GoDaddy) to its external IP. Replace conflicting root website/parking records, preserving email records. Keep ports 80 and 443 reachable; cert-manager uses HTTP-01 validation. No `www` hostname is configured. GoDaddy API synchronization is not implemented: `dealone.work` currently uses Porkbun nameservers.
 
 For local tooling instead of Actions:
 
