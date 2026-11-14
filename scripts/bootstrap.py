@@ -26,4 +26,4 @@ if __name__ == "__main__":
                                 "solvers": [{"http01": {"ingress": {"ingressClassName": "traefik"}}}]}}}
     run("kubectl", "apply", "-f", "-", input=json.dumps(issuer))
     run("kubectl", "get", "service", "traefik", "-n", "traefik")
-    print("Point the dealone.work DNS A record to the EXTERNAL-IP shown above. Remove conflicting AAAA records.")
+    print("Ingress ready. Run scripts/dns.py --apply to synchronize Porkbun DNS or print manual setup instructions.")

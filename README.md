@@ -64,6 +64,8 @@ See **[deployment setup](docs/DEPLOYMENT.md)** for exact GitHub secrets, workflo
 
 Infrastructure provisioning is manual and starts with a read-only cost quote. Application deployment never provisions a cluster. Configure the required secrets and variables before using either workflow; no cloud resources are created by cloning or running this project locally.
 
+Domain DNS can be automatic: add `PORKBUN_API_KEY` and `PORKBUN_SECRET_API_KEY` with API access enabled for `dealone.work`. Provisioning and deployment then synchronize the root website record to Traefik's load balancer, preserving email records and subdomains. Without these keys, the workflows print manual DNS instructions. See the deployment guide for setup and a standalone DNS refresh workflow.
+
 ## Verify
 
 ```sh
