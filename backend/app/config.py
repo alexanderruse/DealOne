@@ -34,6 +34,10 @@ class Settings(BaseSettings):
             raise RuntimeError("PAYMENTS_MODE must be simulation or nessie")
         if self.payments_mode == "nessie" and not (self.nessie_api_key and self.nessie_card_account_id):
             raise RuntimeError("PAYMENTS_MODE=nessie requires NESSIE_API_KEY and NESSIE_CARD_ACCOUNT_ID")
+        if self.payments_mode not in ("simulation", "nessie"):
+            raise RuntimeError("PAYMENTS_MODE must be simulation or nessie")
+        if self.payments_mode == "nessie" and not (self.nessie_api_key and self.nessie_card_account_id):
+            raise RuntimeError("PAYMENTS_MODE=nessie requires NESSIE_API_KEY and NESSIE_CARD_ACCOUNT_ID")
         if self.app_env == "production":
             if len(self.session_secret) < 32 or self.session_secret.startswith("local-"):
                 raise RuntimeError("Set a unique SESSION_SECRET of at least 32 characters")

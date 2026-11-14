@@ -56,7 +56,10 @@ type Order = {
   confirmation: string | null;
   error: string | null;
   created_at: string;
+  payment_reference?: string | null;
+  cancellable_until?: string | null;
 };
+type Card = { provider: string; credit_limit_cents?: number | null; available_cents?: number | null };
 type Notice = { id: string; message: string; created_at: string };
 type Observation = { price_cents: number; observed_at: string };
 type Rules = { product_id: string; max_total_cents: number; expires_at: string; quantity: 1 };
@@ -71,6 +74,8 @@ function App() {
   const [page, setPage] = useState('Overview');
   const [error, setError] = useState('');
   const [grok, setGrok] = useState(false);
+  const [payments, setPayments] = useState('simulation');
+  const [card, setCard] = useState<Card | null>(null);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Product | null>(null);
   const [budget, setBudget] = useState('180');
@@ -98,6 +103,10 @@ function App() {
     setWatches(w);
     setOrders(o);
     setNotices(n);
+    // The card view is extra; a bank hiccup must never blank the rest of the page.
+    api<Card>('/payments/card')
+      .then(setCard)
+      .catch(() => setCard(null));
     const history = await Promise.all(
       p.map(
         async (product) =>
@@ -109,10 +118,11 @@ function App() {
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setInterval>;
-    api<{ grok_configured: boolean }>('/session')
+    api<{ grok_configured: boolean; payments: string }>('/session')
       .then(async (s) => {
         if (!active) return;
         setGrok(s.grok_configured);
+        setPayments(s.payments);
         await refresh();
         timer = setInterval(() => {
           refresh().catch(() => {});
@@ -208,8 +218,14 @@ function App() {
             <strong>Your rules. Always.</strong>
             <p>Every purchase stays within the limits you approve.</p>
             <span>
-              <i /> Simulated payments
+              <i /> {payments === 'nessie' ? 'Nessie sandbox card' : 'Simulated payments'}
             </span>
+            {card?.provider === 'nessie' && card.available_cents != null && (
+              <p>
+                {money(card.available_cents)} available
+                {card.credit_limit_cents != null && ` of ${money(card.credit_limit_cents)}`}
+              </p>
+            )}
           </div>
           <button className="nav-item" onClick={() => setAdminOpen(true)}>
             <SlidersHorizontal size={18} />
@@ -419,6 +435,19 @@ function App() {
                                   Activate
                                 </Button>
                               )}
+                              {w.status === 'paused' && (
+                                <Button
+                                  variant="outline"
+                                  disabled={busy}
+                                  onClick={() =>
+                                    run(async () => {
+                                      await api(`/permissions/${w.id}/resume`, { method: 'POST' });
+                                    })
+                                  }
+                                >
+                                  Reviewed, continue
+                                </Button>
+                              )}
                               {['draft', 'active', 'paused'].includes(w.status) && (
                                 <Button
                                   variant="ghost"
@@ -549,7 +578,30 @@ function App() {
                         <span className={`status ${o.status}`}>{o.status}</span>
                         <strong>{money(o.total_cents)}</strong>
                         <p>{o.confirmation || 'Awaiting confirmation'}</p>
-                        <small>{o.error || 'Simulated virtual card · one purchase'}</small>
+                        <small>
+                          {o.error ||
+                            (o.payment_reference && !o.payment_reference.startsWith('sim_')
+                              ? `Nessie sandbox card · ${o.payment_reference}`
+                              : 'Simulated virtual card · one purchase')}
+                        </small>
+                        {o.cancellable_until && new Date(o.cancellable_until) > new Date() && (
+                          <Button
+                            variant="outline"
+                            disabled={busy}
+                            onClick={() =>
+                              run(async () => {
+                                await api(`/orders/${o.id}/cancel`, { method: 'POST' });
+                              })
+                            }
+                          >
+                            Cancel purchase (
+                            {Math.max(
+                              0,
+                              Math.round((new Date(o.cancellable_until).getTime() - Date.now()) / 1000),
+                            )}
+                            s left)
+                          </Button>
+                        )}
                       </div>
                     ))}
                   </section>

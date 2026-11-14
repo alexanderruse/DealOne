@@ -87,4 +87,5 @@ def execute_tool(name, args, db, owner):
         product = db.get(Product, permission.product_id)
         validate_purchase(permission, product)
         return {"permission_id": permission.id, "quote": product_view(product)}
-    return serialize(prepare_order(db, permission.id, owner))
+    order = prepare_order(db, permission.id, owner)
+    return serialize(order) if order else {"status": "paused_for_review", "detail": "Price is unusually low; the user must review it."}
