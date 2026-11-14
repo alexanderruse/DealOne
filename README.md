@@ -76,7 +76,7 @@ kubectl kustomize infra/k8s
 
 For browser acceptance tests, install frontend dependencies in Node 22 and matching Playwright Chromium, then run `npm run test:e2e` in `frontend`. Tests exercise real API state and the browser worker; backend tests use an isolated temporary database schema.
 
-`Checks` runs frontend build/audit, the Docker stack, backend integration tests, and browser tests. `Deploy DealOne` runs after successful main-branch push checks and reports missing deployment configuration explicitly. Manual redeployment also supports previous image tags.
+Every push to `main` automatically runs `Checks` → `Deploy DealOne` → `Synchronize Porkbun DNS` → `Refresh registry pull credentials`, proceeding only after the previous workflow succeeds. Checks also run on pull requests without deploying. Deployment reports missing configuration explicitly. Manual runs remain available for recovery and rollback; registry credentials also refresh weekly.
 
 Health endpoints: `/api/health/live`, `/api/health/ready`, `/api/health/worker`. Interactive API reference: `/docs` on the internal API service (not routed by the public web server).
 

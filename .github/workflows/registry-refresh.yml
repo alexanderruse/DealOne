@@ -1,5 +1,9 @@
 name: Refresh registry pull credentials
 on:
+  workflow_run:
+    workflows: [Synchronize Porkbun DNS]
+    types: [completed]
+    branches: [main]
   schedule:
     - cron: '17 6 * * 1'
   workflow_dispatch:
@@ -10,7 +14,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   refresh:
-    if: vars.VULTR_CLUSTER_ID != ''
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -20,6 +26,8 @@ jobs:
       KUBECONFIG: /tmp/dealone.kubeconfig
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - uses: azure/setup-kubectl@v4
       - run: |
           python3 scripts/vultr.py kubeconfig
