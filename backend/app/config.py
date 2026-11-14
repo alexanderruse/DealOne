@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     nessie_card_account_id: str = ""
     nessie_merchant_id: str = ""
     nessie_settle_immediately: bool = True
+    cancel_window_seconds: int = 50
 
     @property
     def worker_token(self) -> str:
