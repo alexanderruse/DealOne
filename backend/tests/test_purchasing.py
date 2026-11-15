@@ -212,6 +212,7 @@ def test_production_browser_worker_can_submit_from_internal_origin(client, db, m
 
 def test_unconfigured_grok_is_explicit(client, monkeypatch):
     monkeypatch.setattr(settings(), "xai_api_key", "")
+    monkeypatch.setattr(settings(), "openrouter_api_key", "")
     response = client.post("/api/rules/parse", json={"text": "Buy headphones under $180"})
     assert response.status_code == 503
     assert "manual" in response.json()["detail"]

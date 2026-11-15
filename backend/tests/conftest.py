@@ -37,8 +37,12 @@ def clean_database(factory):
 
 @pytest.fixture(autouse=True)
 def simulated_payments(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("AI_BUDGET_USD", "10.0")
     from app.config import settings
+    settings.cache_clear()
     monkeypatch.setattr(settings(), "app_env", "test")
+    monkeypatch.setattr(settings(), "ai_budget_usd", 10.0)
     """Tests never touch a real bank, whatever PAYMENTS_MODE the container was started with."""
     from app import payments
     monkeypatch.setattr(payments, "provider", payments.SimulatedVirtualCardProvider())

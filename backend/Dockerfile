@@ -3,12 +3,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip==26.3 && pip install --no-cache-dir -r requirements.txt
-RUN useradd --create-home --uid 10001 dealone
+RUN useradd --create-home --uid 10001 dealone && mkdir -p /var/lib/dealone/screenshots && chown -R dealone:dealone /var/lib/dealone
 FROM dependencies AS browser-dependencies
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 RUN playwright install --with-deps chromium && chmod -R a+rX /opt/playwright
 
-FROM dependencies AS api
+FROM browser-dependencies AS api
 COPY . .
 USER dealone
 EXPOSE 8000

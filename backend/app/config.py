@@ -12,8 +12,14 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://dealone:dealone@db:5432/dealone"
     session_secret: str = "local-development-session-key-change-before-deployment"
     demo_admin_token: str = "local-demo-admin"
+    openrouter_api_key: str = ""
+    openrouter_model: str = "google/gemini-3.5-flash-lite"
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    ai_budget_usd: float = 10.0
+    ai_budget_window_seconds: int = 10800
+    screenshot_storage_path: str = "/var/lib/dealone/screenshots"
     xai_api_key: str = ""
-    xai_model: str = "grok-4.20"
+    xai_model: str = "google/gemini-3.5-flash-lite"
     resend_api_key: str = ""
     resend_from_email: str = ""
     storefront_url: str = "http://api:8000"

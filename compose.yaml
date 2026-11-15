@@ -6,6 +6,7 @@ services:
       POSTGRES_DB: dealone
       POSTGRES_USER: dealone
       POSTGRES_PASSWORD: dealone
+    ports: ["5432:5432"]
     volumes:
       - database:/var/lib/postgresql/data
     healthcheck:
@@ -22,6 +23,8 @@ services:
   api:
     build: {context: backend, target: api}
     env_file: .env
+    volumes:
+      - screenshots:/var/lib/dealone/screenshots
     depends_on:
       migrate: {condition: service_completed_successfully}
     healthcheck:
@@ -33,6 +36,8 @@ services:
   worker:
     build: {context: backend, target: worker}
     env_file: .env
+    volumes:
+      - screenshots:/var/lib/dealone/screenshots
     depends_on:
       api: {condition: service_healthy}
     init: true
@@ -46,3 +51,4 @@ services:
     restart: unless-stopped
 volumes:
   database:
+  screenshots:
