@@ -1961,3 +1961,13 @@ textarea::placeholder {
 .price-history summary { cursor:pointer; text-decoration:underline; padding:6px 0; }
 .price-history ul { margin:8px 0; padding-left:18px; max-height:180px; overflow:auto; }
 .price-history-unchanged { margin-bottom:12px; }
+
+.payment-evidence {
+  width: fit-content;
+  max-width: 100%;
+}
+
+.evidence-card-ui h4 {
+  margin-top: 18px;
+  font-weight: 700;
+}

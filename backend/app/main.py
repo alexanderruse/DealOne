@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import secrets
 from uuid import uuid4
+from urllib.parse import urlsplit
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from sqlalchemy import func, select, text
@@ -16,6 +17,7 @@ from .models import (Product, Permission, Order, PriceObservation, Notification,
                      PaymentAuthorization, VirtualCard, BankCharge,
                      ApprovedDomain, AISpendRecord, CheckoutDemoRun, utcnow)
 from . import payments
+from .merchant_links import approved_hosts, https_url, is_approved, normalize_host
 from .payments import PaymentUnavailable
 from .schemas import DiscoveryRequest, InspectRequest, HistoryRequest
 from .schemas import (Rules, ActivateRequest, ParseRequest, AssistantRequest, PriceChange,
@@ -140,10 +142,16 @@ def payment_card(user: str = Depends(owner), db: Session = Depends(get_db)):
 @app.get("/api/payments/cards")
 def payment_cards(user: str = Depends(owner), db: Session = Depends(get_db)):
     """One virtual card per permission. Never returns payment credentials."""
-    rows = db.execute(select(Permission, VirtualCard).outerjoin(
-        VirtualCard, VirtualCard.permission_id == Permission.id).where(Permission.owner == user)
+    rows = db.execute(select(Permission, VirtualCard, Product).outerjoin(
+        VirtualCard, VirtualCard.permission_id == Permission.id).outerjoin(
+        Product, Product.id == Permission.product_id).where(Permission.owner == user)
         .order_by(Permission.created_at.desc()))
-    return [permission_view(permission, card) for permission, card in rows]
+    results = []
+    for permission, card, product in rows:
+        results.append({**permission_view(permission, card), "product": (
+            {**product_view(product), "domain_approved": is_approved(db, product.source_url)}
+            if product else None)})
+    return results
 
 
 @app.get("/api/payments/cards/{permission_id}/verify")
@@ -179,7 +187,9 @@ def payment_ledger(user: str = Depends(owner), db: Session = Depends(get_db)):
 @app.get("/api/products")
 def products(db: Session = Depends(get_db)):
     from .catalog import public_products
-    return [product_view(p) for p in public_products(db)[:250]]
+    allowed = approved_hosts(db)
+    return [product_view(p) for p in public_products(db)
+            if normalize_host(urlsplit(p.source_url).hostname) in allowed][:250]
 
 
 @app.post("/api/price-history")
@@ -231,9 +241,9 @@ def assistant(body: AssistantRequest, user: str = Depends(owner), db: Session = 
 
 @app.post("/api/catalog/refresh")
 def refresh_merchant_catalog(user: str = Depends(owner), db: Session = Depends(get_db)):
-    from .catalog import refresh_catalog, public_products, store_product_url
-    from .discovery import enqueue
-    sources = list(dict.fromkeys(store_product_url(p.source_url) for p in reversed(public_products(db))))[:2]
+    from .catalog import refresh_catalog, public_products
+    from .discovery import enqueue, product_location
+    sources = list(dict.fromkeys(product_location(p) for p in reversed(public_products(db)) if not p.id.startswith("link-") and is_approved(db, p.source_url)))[:2]
     for store, handle in sources:
         enqueue(db, store, "product", handle, priority=80)
     db.commit()
@@ -241,9 +251,9 @@ def refresh_merchant_catalog(user: str = Depends(owner), db: Session = Depends(g
 
 
 @app.get("/api/catalog/stores")
-def approved_stores():
+def approved_stores(db: Session = Depends(get_db)):
     from .catalog import STORES
-    return [{"id": key, "name": value["name"], "domain": value["host"]} for key, value in STORES.items()]
+    return [{"id": key, "name": value["name"], "domain": value["host"]} for key, value in STORES.items() if normalize_host(value["host"]) in approved_hosts(db)]
 
 
 @app.post("/api/catalog/discover")
@@ -297,10 +307,16 @@ def create_permission(body: Rules, user: str = Depends(owner), db: Session = Dep
 
 @app.get("/api/permissions")
 def permissions(user: str = Depends(owner), db: Session = Depends(get_db)):
-    rows = db.execute(select(Permission, VirtualCard).outerjoin(
-        VirtualCard, VirtualCard.permission_id == Permission.id).where(Permission.owner == user)
+    rows = db.execute(select(Permission, VirtualCard, Product).outerjoin(
+        VirtualCard, VirtualCard.permission_id == Permission.id).outerjoin(
+        Product, Product.id == Permission.product_id).where(Permission.owner == user)
         .order_by(Permission.created_at.desc()))
-    return [permission_view(permission, card) for permission, card in rows]
+    results = []
+    for permission, card, product in rows:
+        results.append({**permission_view(permission, card), "product": (
+            {**product_view(product), "domain_approved": is_approved(db, product.source_url)}
+            if product else None)})
+    return results
 
 
 @app.post("/api/permissions/{permission_id}/activate")
@@ -319,6 +335,8 @@ def activate(permission_id: str, body: ActivateRequest | None = None, user: str 
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
     if product.source_kind == "merchant":
+        if product.id.startswith("link-") and body.checkout_mode == "sandbox":
+            raise HTTPException(409, "This merchant supports price alerts only")
         permission.checkout_mode = body.checkout_mode
         if body.checkout_mode == "sandbox":
             amount = body.sandbox_total_cents or product.price_cents
@@ -513,8 +531,12 @@ def add_approved_domain(body: ApprovedDomainCreate, db: Session = Depends(get_db
     elif clean_domain.startswith("http://"):
         clean_domain = clean_domain[7:]
     clean_domain = clean_domain.split("/")[0].strip()
-    if not clean_domain:
-        raise HTTPException(422, "Invalid domain format")
+    try:
+        https_url(f"https://{clean_domain}/")
+        if any(character in clean_domain for character in ":?#@"):
+            raise ValueError()
+    except ValueError:
+        raise HTTPException(422, "Invalid domain format") from None
     existing = db.scalar(select(ApprovedDomain).where(ApprovedDomain.domain == clean_domain))
     if existing:
         raise HTTPException(409, "Domain is already on the approved whitelist")
@@ -552,6 +574,9 @@ def trigger_checkout_demo(body: CheckoutDemoRequest, background_tasks: Backgroun
     if not product:
         raise HTTPException(404, "Product not found")
 
+    if product.id.startswith("link-") or not is_approved(db, product.source_url):
+        raise HTTPException(409, "Checkout demos require a supported and approved merchant")
+
     demo_run = CheckoutDemoRun(
         permission_id=permission.id,
         owner=permission.owner,
@@ -568,12 +593,26 @@ def trigger_checkout_demo(body: CheckoutDemoRequest, background_tasks: Backgroun
     return serialize(demo_run)
 
 
+@app.get("/api/activity/checkout-runs")
+def activity_checkout_runs(user: str = Depends(owner), db: Session = Depends(get_db)):
+    return checkout_run_views(db, user)
+
+
 @app.get("/api/demo/checkout-demos")
 def list_checkout_demos(db: Session = Depends(get_db)):
-    runs = db.execute(select(CheckoutDemoRun, CheckoutDemoRun.screenshot_png.is_not(None))
-                      .order_by(CheckoutDemoRun.created_at.desc()).limit(50)).all()
+    return checkout_run_views(db)
+
+
+def checkout_run_views(db, user=None):
+    query = select(CheckoutDemoRun, CheckoutDemoRun.screenshot_png.is_not(None),
+                   CheckoutDemoRun.payment_screenshot_png.is_not(None))
+    if user is not None:
+        query = query.where(CheckoutDemoRun.owner == user)
+    else:
+        query = query.where(CheckoutDemoRun.status.not_in(("queued", "running")))
+    runs = db.execute(query.order_by(CheckoutDemoRun.created_at.desc()).limit(50)).all()
     results = []
-    for r, stored_screenshot in runs:
+    for r, stored_screenshot, stored_payment in runs:
         product = db.get(Product, r.product_id)
         card = db.get(VirtualCard, r.permission_id)
         has_screenshot = bool(stored_screenshot or (r.screenshot_path and Path(r.screenshot_path).exists()))
@@ -589,9 +628,18 @@ def list_checkout_demos(db: Session = Depends(get_db)):
             "seller": product.seller if product else "",
             "card_last4": card.last4 if card else None,
             "has_screenshot": has_screenshot,
+            "has_payment_screenshot": stored_payment,
             "fields_completed": fields,
         })
     return results
+
+
+@app.get("/api/screenshots/{demo_id}/payment")
+def get_payment_screenshot(demo_id: str, db: Session = Depends(get_db)):
+    image = db.scalar(select(CheckoutDemoRun.payment_screenshot_png).where(CheckoutDemoRun.id == demo_id))
+    if not image:
+        raise HTTPException(404, "Payment close-up unavailable")
+    return Response(content=image, media_type="image/png")
 
 
 @app.get("/api/screenshots/{demo_id}")
@@ -611,12 +659,15 @@ def get_screenshot_file(demo_id: str, db: Session = Depends(get_db)):
     return FileResponse(str(p), media_type="image/png")
 
 
+@app.get("/api/evidence", response_class=HTMLResponse)
 @app.get("/screenshots", response_class=HTMLResponse)
 def view_screenshots_page(db: Session = Depends(get_db)):
-    runs = db.execute(select(CheckoutDemoRun, CheckoutDemoRun.screenshot_png.is_not(None))
+    runs = db.execute(select(CheckoutDemoRun, CheckoutDemoRun.screenshot_png.is_not(None),
+                             CheckoutDemoRun.payment_screenshot_png.is_not(None))
+                      .where(CheckoutDemoRun.status.not_in(("queued", "running")))
                       .order_by(CheckoutDemoRun.created_at.desc()).limit(30)).all()
     cards_html = []
-    for r, stored_screenshot in runs:
+    for r, stored_screenshot, stored_payment in runs:
         product = db.get(Product, r.product_id)
         card = db.get(VirtualCard, r.permission_id)
         has_screenshot = bool(stored_screenshot or (r.screenshot_path and Path(r.screenshot_path).exists()))
@@ -635,6 +686,11 @@ def view_screenshots_page(db: Session = Depends(get_db)):
             f'<img src="/api/screenshots/{r.id}" alt="Masked checkout screenshot" loading="lazy" />'
             f'</a><div class="zoom-hint">Click image to expand</div></div>'
         ) if has_screenshot else '<div class="no-img">Screenshot pending or unavailable</div>'
+
+        payment_path = f"/api/screenshots/{r.id}/payment"
+        payment_img = (f'<div class="img-wrap"><a href="{payment_path}" target="_blank" rel="noopener">'
+                       f'<img src="{payment_path}" alt="Masked payment close-up" loading="lazy" />'
+                       '</a></div>') if stored_payment else '<p>Payment close-up unavailable for this run.</p>'
 
         trigger_badge = '<span class="badge trigger-price">Price Drop Auto-Trigger</span>' if r.trigger_type == 'price_drop' else '<span class="badge trigger-manual">Admin Manual Trigger</span>'
 
@@ -665,7 +721,10 @@ def view_screenshots_page(db: Session = Depends(get_db)):
           </div>
           {blocker_html}
           <div class="card-body">
+            <h3>Checkout overview</h3>
             {screenshot_img}
+            <h3>Payment close-up</h3>
+            {payment_img}
           </div>
         </article>
         ''')

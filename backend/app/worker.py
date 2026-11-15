@@ -7,13 +7,15 @@ from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from .config import settings
 from .db import SessionLocal
 from .models import (Permission, Product, Order, MerchantOrder, Heartbeat, PriceObservation,
-                     ApprovedDomain, CheckoutDemoRun, VirtualCard, utcnow)
+                     CheckoutDemoRun, VirtualCard, utcnow)
 from .services import prepare_order, reconcile_order, notify, settle_due_charges, PurchaseRejected, total, checkout_total
 from . import payments
+from .merchant_links import https_url, normalize_host
+from .merchant_links import is_approved as is_domain_approved
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("dealone.worker")
@@ -71,14 +73,6 @@ def rendered_payment_input(frame, selector):
     return None
 
 
-def is_domain_approved(db, url: str) -> bool:
-    netloc = urlparse(url).netloc.lower()
-    approved = set(db.scalars(select(ApprovedDomain.domain)).all())
-    if not approved:
-        approved = {"www.keychron.com"}
-    return netloc in approved or any(netloc.endswith("." + d) for d in approved)
-
-
 def scan():
     with SessionLocal.begin() as db:
         db.merge(Heartbeat(id="worker", updated_at=utcnow()))
@@ -98,6 +92,8 @@ def scan():
                     notify(db, permission.owner, f"expired:{permission.id}", "Your purchase permission expired without a purchase.")
                     continue
                 product = db.get(Product, permission.product_id)
+                if product.source_kind == "merchant" and not is_domain_approved(db, product.source_url):
+                    continue
                 freshness = 180 if (settings().app_env == "test" or "pytest" in sys.modules) else 660
                 if product.source_kind == "merchant" and permission.checkout_mode != "sandbox":
                     if product.stock_status == "in_stock" and product.stock > 0 and product.price_checked_at and product.price_checked_at > utcnow() - timedelta(seconds=freshness) and product.price_cents <= permission.max_total_cents:
@@ -111,7 +107,7 @@ def scan():
                                 CheckoutDemoRun.created_at >= utcnow() - timedelta(minutes=15)
                             )
                         )
-                        if not recent_demo:
+                        if not recent_demo and not product.id.startswith("link-"):
                             price_drop_run = CheckoutDemoRun(
                                 permission_id=permission.id,
                                 owner=permission.owner,
@@ -157,15 +153,31 @@ def scan():
 
 
 def run_checkout_demo(demo_id: str):
+    with SessionLocal.begin() as db:
+        claimed = db.execute(update(CheckoutDemoRun).where(
+            CheckoutDemoRun.id == demo_id, CheckoutDemoRun.status == "queued"
+        ).values(status="running", updated_at=utcnow())).rowcount
+    if not claimed:
+        return
+    try:
+        capture_checkout_demo(demo_id)
+    except Exception:
+        log.exception("Checkout demo failed")
+        with SessionLocal.begin() as db:
+            demo = db.get(CheckoutDemoRun, demo_id)
+            if demo is None:
+                return
+            demo.status = "failed"
+            demo.blocker_reason = "Could not run the checkout demonstration"
+            demo.updated_at = utcnow()
+
+
+def capture_checkout_demo(demo_id: str):
     """Playwright browser worker for automated checkout fill and evidence capture.
     Strictly prevents submission, aborts payment processing endpoints, masks inputs,
     and records evidence screenshot."""
     with SessionLocal.begin() as db:
         demo = db.get(CheckoutDemoRun, demo_id)
-        if not demo or demo.status not in ("queued", "running"):
-            return
-        demo.status = "running"
-        demo.updated_at = utcnow()
         permission = db.get(Permission, demo.permission_id)
         if not permission:
             demo.status = "failed"
@@ -178,10 +190,10 @@ def run_checkout_demo(demo_id: str):
             return
         card = db.get(VirtualCard, demo.permission_id)
 
-        target_url = product.source_url or f"https://www.keychron.com/products/{product.id}"
-        if not is_domain_approved(db, target_url):
+        target_url = product.source_url
+        if product.id.startswith("link-") or not is_domain_approved(db, target_url):
             demo.status = "blocked"
-            demo.blocker_reason = f"Domain '{urlparse(target_url).netloc}' is not on the approved domains list"
+            demo.blocker_reason = f"Domain '{urlparse(target_url or '').netloc}' is not on the approved domains list"
             demo.updated_at = utcnow()
             return
 
@@ -218,13 +230,24 @@ def run_checkout_demo(demo_id: str):
     blocker_reason = None
     screenshot_dir = get_screenshot_dir()
     screenshot_path = screenshot_dir / f"{demo_id}.png"
+    payment_png = None
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         context = browser.new_context(viewport={"width": 1280, "height": 900}, device_scale_factor=2)
-        # Allow the cart and address UI, but never send a payment/order submission.
+        page = context.new_page()
+        # Allow hosted fields while keeping top-level navigation on the approved store.
         def prevent_submission(route):
             request = route.request
+            if request.is_navigation_request() and request.frame == page.main_frame:
+                try:
+                    host = normalize_host(urlparse(https_url(request.url)).hostname)
+                except ValueError:
+                    route.abort()
+                    return
+                if host != normalize_host(urlparse(target_url).hostname):
+                    route.abort()
+                    return
             path = urlparse(request.url).path.lower()
             if request.method.upper() not in ("GET", "HEAD", "OPTIONS") and any(
                 term in path for term in ("/payments", "/sessions", "/orders", "/complete", "/process")
@@ -234,7 +257,6 @@ def run_checkout_demo(demo_id: str):
                 route.continue_()
         context.route("**/*", prevent_submission)
         context.add_init_script("document.addEventListener('submit', event => event.preventDefault(), true)")
-        page = context.new_page()
         page.set_default_timeout(30_000)
 
         try:
@@ -404,8 +426,8 @@ def run_checkout_demo(demo_id: str):
                         document.activeElement?.blur?.();
                         document.querySelectorAll('input').forEach(input => {
                             const idStr = ((input.name || '') + ' ' + (input.id || '') + ' ' + (input.placeholder || '')).toLowerCase();
-                            if (['cc-number', 'cc-csc'].includes(input.autocomplete) ||
-                                /number|card|cvv|verification|security/.test(idStr)) {
+                            if (['cc-number', 'cc-csc', 'cc-exp', 'cc-exp-month', 'cc-exp-year'].includes(input.autocomplete) ||
+                                /number|card|cvv|verification|security|expir|cvc/.test(idStr)) {
                                 input.style.setProperty('-webkit-text-security', 'disc', 'important');
                             }
                         });
@@ -426,13 +448,31 @@ def run_checkout_demo(demo_id: str):
             # STRICT SUBMISSION PREVENTION: NEVER CLICK PLACE ORDER OR SUBMIT
             # Chromium may leave off-screen cross-origin frames unpainted in a
             # full-page capture even after their input values were updated.
-            for locator, frame in payment_inputs.values():
-                if frame.parent_frame is not None:
-                    frame.frame_element().scroll_into_view_if_needed(timeout=5000)
-                else:
-                    locator.scroll_into_view_if_needed(timeout=5000)
-            page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
-            page.screenshot(path=str(screenshot_path), full_page=True)
+            masks = [frame.locator(", ".join(CARD_SELECTORS.values()))
+                     for frame in page.frames]
+            try:
+                if all(field in fields_completed for field in CARD_SELECTORS):
+                    number, frame = payment_inputs["card_number"]
+                    if frame.parent_frame is not None:
+                        frame.frame_element().scroll_into_view_if_needed(timeout=3000)
+                    else:
+                        number.scroll_into_view_if_needed(timeout=3000)
+                    page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+                    boxes = [locator.bounding_box(timeout=1500) for locator, _ in payment_inputs.values()]
+                    viewport = page.viewport_size
+                    if all(box and box["y"] >= 0 and box["y"] + box["height"] <= viewport["height"] for box in boxes):
+                        left = max(0, min(box["x"] for box in boxes) - 32)
+                        top = max(0, min(box["y"] for box in boxes) - 70)
+                        right = min(viewport["width"], max(box["x"] + box["width"] for box in boxes) + 32)
+                        bottom = min(viewport["height"], max(box["y"] + box["height"] for box in boxes) + 64)
+                        payment_png = page.screenshot(clip={"x": left, "y": top, "width": right - left,
+                                                            "height": bottom - top},
+                                                       mask=masks, mask_color="#64748b", timeout=5000)
+            except Exception:
+                log.info("Payment detail capture unavailable for %s", demo_id)
+            masks = [frame.locator(", ".join(CARD_SELECTORS.values())) for frame in page.frames]
+            page.screenshot(path=str(screenshot_path), full_page=True, mask=masks,
+                            mask_color="#64748b", timeout=10000)
 
         except Exception as exc:
             log.exception("Error executing checkout demo: %s", exc)
@@ -448,6 +488,7 @@ def run_checkout_demo(demo_id: str):
             demo.fields_completed = json.dumps(fields_completed)
             demo.screenshot_path = str(screenshot_path) if screenshot_path.exists() else None
             demo.screenshot_png = screenshot_path.read_bytes() if screenshot_path.exists() else None
+            demo.payment_screenshot_png = payment_png
             demo.is_submitted = False  # STRICTLY FALSE
             demo.updated_at = utcnow()
 
@@ -542,9 +583,11 @@ def tick():
 def main():
     settings().validate_runtime()
     from .catalog import refresh_catalog
+    from .discovery import process_catalog_queue
     last_catalog_refresh = -600.0
     while True:
         try:
+            process_catalog_queue()
             if time.monotonic() - last_catalog_refresh >= 600:
                 last_catalog_refresh = time.monotonic()
                 refresh_catalog()

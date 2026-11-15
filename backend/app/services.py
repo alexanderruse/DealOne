@@ -26,13 +26,13 @@ def total(product):
 
 
 def serialize(record):
-    return {c.name: getattr(record, c.name) for c in record.__table__.columns if c.name != "screenshot_png"}
+    return {c.name: getattr(record, c.name) for c in record.__table__.columns if not c.name.endswith("screenshot_png")}
 
 
 def product_view(product):
     from .catalog import requestable
     return {**serialize(product), "total_cents": total(product),
-            "can_request": requestable(product), "merchant_order_placed": False,
+            "can_request": requestable(product), "supports_checkout_demo": not product.id.startswith("link-"), "merchant_order_placed": False,
             "contains_hidden_instructions": bool(product.description and HIDDEN_INSTRUCTION_BAIT[:40] in product.description)}
 
 

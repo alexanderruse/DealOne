@@ -5,7 +5,17 @@ const sample = (minute: number, price_cents: number) => ({
   price_cents, observed_at: new Date(Date.UTC(2026, 10, 15, 0, minute)).toISOString(),
 });
 const changing = [sample(0, 5999), sample(5, 5499), sample(20, 5299)];
-const mouse = (page: Page) => page.locator('.product-card').filter({ hasText: 'Keychron M3' });
+const mouse = (page: Page) => page.locator('.watch-row').filter({ hasText: 'Keychron M3' });
+
+test.beforeEach(async ({ page }) => {
+  const products = [
+    { id: mouseId, name: 'Keychron M3', source_kind: 'merchant' },
+    { id: 'keychron-40574854037593', name: 'Keychron C3', source_kind: 'merchant' },
+  ];
+  await page.route('**/api/permissions', (route) => route.fulfill({ json: products.map((product) => ({
+    id: product.id, product_id: product.id, status: 'active', max_total_cents: 5000, product,
+  })) }));
+});
 
 test('one batch plots real elapsed times and exposes exact observed values', async ({ page }) => {
   const bodies: { product_ids: string[] }[] = [];
@@ -16,6 +26,7 @@ test('one batch plots real elapsed times and exposes exact observed values', asy
     return route.fulfill({ json: { [mouseId]: changing } });
   });
   await page.goto('/');
+  await page.getByRole('button', {name: 'Watchlist', exact: true}).click();
   const chart = mouse(page).locator('.price-history');
   await expect(chart).toBeVisible();
   await expect(chart).toContainText('Low $52.99');
@@ -38,10 +49,11 @@ test('empty, single and invalid observations do not render empty chart panels', 
     'keychron-40574854037593': [],
   } }));
   await page.goto('/');
-  await expect(page.locator('.product-card')).toHaveCount(2);
+  await page.getByRole('button', {name: 'Watchlist', exact: true}).click();
+  await expect(page.locator('.watch-row')).toHaveCount(2);
   await expect(page.locator('.price-history')).toHaveCount(0);
   await expect(page.locator('.price-chart')).toHaveCount(0);
-  await expect(mouse(page).getByRole('button', {name: 'Watch this item'})).toBeEnabled();
+  await expect(mouse(page).getByRole('button', {name: 'Cancel'})).toBeEnabled();
 });
 
 test('unchanged prices show a compact notice instead of a chart', async ({ page }) => {
@@ -49,18 +61,19 @@ test('unchanged prices show a compact notice instead of a chart', async ({ page 
     [mouseId]: [sample(0, 5999), sample(10, 5999), sample(20, 5999)],
   } }));
   await page.goto('/');
+  await page.getByRole('button', {name: 'Watchlist', exact: true}).click();
   await expect(mouse(page)).toContainText('No observed price change');
   await expect(page.locator('.price-history')).toHaveCount(0);
 });
 
-test('unavailable history does not break the catalog or watch dialog', async ({ page }) => {
+test('unavailable history does not break the Watchlist', async ({ page }) => {
   await page.route('**/api/price-history', route => route.fulfill({ status: 503, json: {detail: 'Unavailable'} }));
   await page.goto('/');
-  await expect(page.locator('.product-card')).toHaveCount(2);
+  await page.getByRole('button', {name: 'Watchlist', exact: true}).click();
+  await expect(page.locator('.watch-row')).toHaveCount(2);
   await expect(page.locator('.price-history')).toHaveCount(0);
   await expect(page.getByRole('alert')).toHaveCount(0);
-  await mouse(page).getByRole('button', {name: 'Watch this item'}).click();
-  await expect(page.getByRole('dialog')).toContainText('Keychron M3');
+  await expect(mouse(page).getByRole('button', {name: 'Cancel'})).toBeEnabled();
 });
 
 test('long observation gaps are not connected', async ({ page }) => {
@@ -68,6 +81,7 @@ test('long observation gaps are not connected', async ({ page }) => {
     [mouseId]: [sample(0, 5999), sample(5, 5499), sample(60, 5299)],
   }}));
   await page.goto('/');
+  await page.getByRole('button', {name: 'Watchlist', exact: true}).click();
   const chart = mouse(page).locator('.price-history');
   await expect(chart.locator('circle')).toHaveCount(3);
   await expect(chart.locator('polyline')).toHaveCount(1);
@@ -80,19 +94,21 @@ test('slow history times out while the product remains usable', async ({ page })
   page.on('requestfailed', request => {if (request.url().endsWith('/api/price-history')) aborted = true;});
   await page.route('**/api/price-history', () => {});
   await page.goto('/');
-  await expect(page.locator('.product-card')).toHaveCount(2);
+  await page.getByRole('button', {name: 'Watchlist', exact: true}).click();
+  await expect(page.locator('.watch-row')).toHaveCount(2);
   await expect.poll(() => aborted, {timeout: 6000}).toBe(true);
-  await expect(mouse(page).getByRole('button', {name: 'Watch this item'})).toBeEnabled();
+  await expect(mouse(page).getByRole('button', {name: 'Cancel'})).toBeEnabled();
   await expect(page.locator('.price-history')).toHaveCount(0);
 });
 
-test('inline history fits a mobile product card', async ({ page }) => {
+test('inline history fits a mobile watch row', async ({ page }) => {
   await page.setViewportSize({width: 390, height: 844});
   await page.route('**/api/price-history', route => route.fulfill({json: {
     [mouseId]: [sample(0, 5999), sample(5, 5499), sample(20, 5299)],
   }}));
   await page.goto('/');
+  await page.getByRole('button', {name: 'Watchlist', exact: true}).click();
   await expect(mouse(page).locator('.price-history')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
-  await expect(mouse(page).getByRole('button', {name: 'Watch this item'})).toBeEnabled();
+  await expect(mouse(page).getByRole('button', {name: 'Cancel'})).toBeEnabled();
 });

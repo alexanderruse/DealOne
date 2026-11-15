@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
-  ArrowDownRight,
   ArrowUpRight,
   AudioLines,
   Bell,
@@ -9,7 +8,6 @@ import {
   Check,
   CheckCheck,
   ChevronRight,
-  CircleHelp,
   Command,
   CreditCard,
   ExternalLink,
@@ -20,10 +18,8 @@ import {
   Mouse,
   Package,
   LoaderCircle,
-  LockKeyhole,
   Plus,
   Radar,
-  ShieldAlert,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
@@ -70,6 +66,7 @@ type CheckoutDemoRun = {
   nessie_verified_limit_cents: number;
   fields_completed: string[];
   has_screenshot: boolean;
+  has_payment_screenshot: boolean;
   is_submitted: boolean;
   created_at: string;
 };
@@ -86,6 +83,8 @@ type Product = {
   color: string;
   source_kind: 'demo' | 'merchant';
   can_request: boolean;
+  supports_checkout_demo?: boolean;
+  domain_approved?: boolean;
   stock_status: 'in_stock' | 'sold_out' | 'unknown';
   source_url: string | null;
   image_url: string | null;
@@ -110,6 +109,7 @@ type Permission = {
   checkout_mode: 'merchant_handoff' | 'sandbox' | 'legacy';
   sandbox_total_cents?: number | null;
   card?: PermissionCard | null;
+  product?: Product | null;
 };
 type Order = {
   id: string;
@@ -122,12 +122,6 @@ type Order = {
   payment_reference?: string | null;
   bank_status?: string | null;
   cancellable_until?: string | null;
-};
-type CardSummary = {
-  provider: string;
-  card_count?: number;
-  issued_count?: number;
-  committed_limit_cents?: number;
 };
 type LedgerEntry = {
   source: string;
@@ -163,12 +157,10 @@ function App() {
   const [checkoutMode, setCheckoutMode] = useState<'merchant_handoff' | 'sandbox'>('merchant_handoff');
   const [sandboxTotal, setSandboxTotal] = useState('');
   const [bankEvidence, setBankEvidence] = useState<{last4: string; credit_limit_cents: number; available_cents: number; verified_at: string} | null>(null);
-  const [catalogQuery, setCatalogQuery] = useState('');
   const [recommendations, setRecommendations] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [grok, setGrok] = useState(false);
   const [payments, setPayments] = useState('simulation');
-  const [cardSummary, setCardSummary] = useState<CardSummary | null>(null);
   const [ledger, setLedger] = useState<Ledger>({ charges: [], nessie: [] });
   const [approvedDomains, setApprovedDomains] = useState<ApprovedDomain[]>([]);
   const [newDomain, setNewDomain] = useState('');
@@ -179,12 +171,14 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Product | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [inventoryStatus, setInventoryStatus] = useState('');
-  const [discoveryQuery, setDiscoveryQuery] = useState('');
-  const [discoveryStore, setDiscoveryStore] = useState('keychron');
+  const [watchUrl, setWatchUrl] = useState('');
+  const [linkTask, setLinkTask] = useState<CatalogTask | null>(null);
+  const [linkError, setLinkError] = useState('');
+  const [checkingLink, setCheckingLink] = useState(false);
+  const [checkoutRuns, setCheckoutRuns] = useState<CheckoutDemoRun[]>([]);
+  const linkRequest = useRef(0);
   const [catalogTasks, setCatalogTasks] = useState<CatalogTask[]>([]);
   const [taskIds, setTaskIds] = useState<string[]>([]);
-  const [visibleLimit, setVisibleLimit] = useState(24);
   const [budget, setBudget] = useState('180');
   const [deadline, setDeadline] = useState('7');
   const [parsedExpiration, setParsedExpiration] = useState<string | null>(null);
@@ -212,11 +206,10 @@ function App() {
         api<Notice[]>('/notifications'),
       ]);
       setProducts(p);
-      setWatches(w.filter((watch) => p.some((product) => product.source_kind === 'merchant' && product.id === watch.product_id)));
+      setWatches(w.filter((watch) => (watch.product || p.find((product) => product.id === watch.product_id))?.source_kind === 'merchant'));
       setOrders(o);
       setNotices(n);
       const bankReads = Promise.all([
-        api<CardSummary>('/payments/card').then(setCardSummary).catch(() => setCardSummary(null)),
         api<Ledger>('/payments/ledger').then(setLedger).catch(() => setLedger({ charges: [], nessie: [] })),
         api<ApprovedDomain[]>('/demo/approved-domains').then(setApprovedDomains).catch(() => setApprovedDomains([])),
         api<AIBudget>('/ai/budget').then(setAiBudget).catch(() => setAiBudget(null)),
@@ -248,10 +241,27 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (page !== 'Activity') return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    async function loadRuns() {
+      try {
+        const runs = await api<CheckoutDemoRun[]>('/activity/checkout-runs');
+        if (active) setCheckoutRuns(runs);
+      } catch {
+        // A transient failure should leave the last known statuses visible.
+      } finally {
+        if (active) timer = setTimeout(loadRuns, 4000);
+      }
+    }
+    void loadRuns();
+    return () => { active = false; clearTimeout(timer); };
+  }, [page]);
+
   function trackTask(task: CatalogTask) {
     setTaskIds((ids) => [...new Set([...ids, task.task_id])].slice(-8));
     setCatalogTasks((tasks) => [...tasks.filter((old) => old.task_id !== task.task_id), task].slice(-8));
-    setInventoryStatus(task.message);
   }
   useEffect(() => {
     if (!taskIds.length) return;
@@ -260,28 +270,50 @@ function App() {
       const tasks = await Promise.all(taskIds.map((id) => api<CatalogTask>(`/catalog/tasks/${id}`)));
       if (!active) return;
       setCatalogTasks(tasks);
-      setRecommendations([...new Set(tasks.flatMap((task) => task.products.map((product) => product.id)))]);
+      setRecommendations((ids) => [...new Set([...ids, ...tasks.flatMap((task) => task.products.map((product) => product.id))])]);
     };
     update().catch(() => {});
     const timer = setInterval(() => { update().catch(() => {}); }, 4000);
     return () => {active = false; clearInterval(timer);};
   }, [taskIds.join(',')]);
 
-  async function inspectListing(url: string) {
-    trackTask(await api<CatalogTask>('/catalog/inspect', {method: 'POST', body: JSON.stringify({url})}));
+  async function checkWatchLink() {
+    const request = ++linkRequest.current;
+    setCheckingLink(true);
+    setLinkError('');
+    setLinkTask(null);
+    try {
+      const task = await api<CatalogTask>('/catalog/inspect', {
+        method: 'POST', body: JSON.stringify({ url: watchUrl.trim() }),
+      });
+      if (request === linkRequest.current) setLinkTask(task);
+    } catch (cause) {
+      if (request === linkRequest.current) setLinkError((cause as Error).message);
+    } finally {
+      if (request === linkRequest.current) setCheckingLink(false);
+    }
   }
-  function discoveryResults() {
-    const listings = [...new Map(catalogTasks.flatMap((task) => task.listings).map((listing) => [listing.source_url, listing])).values()];
-    return <section className="discovery-results" aria-label="Live merchant discovery">
-      {catalogTasks.length > 0 && <div className="discovery-progress" role="status">{catalogTasks.slice(-2).map((task) => <p key={task.task_id}><strong>{task.store} · {task.status}</strong> — {task.message}{task.checked_at ? ` Observed ${new Date(task.checked_at).toLocaleTimeString()}.` : ''}{task.status === 'queued' && task.next_check_at ? ` Next eligible check: ${new Date(task.next_check_at).toLocaleTimeString()}.` : ''}</p>)}</div>}
-      {listings.length > 0 && <><h3>Found at the store</h3><p>Real listing previews. Check variants to verify stock, exact price, and start a watch.</p><div className="discovery-grid">{listings.map((listing) => <article className="discovery-card" key={listing.source_url}>
-        {listing.image_url ? <img src={listing.image_url} alt={listing.name} loading="lazy" /> : <Package size={48} />}
-        <div><small>{listing.seller}</small><h4>{listing.name}</h4><p>From {money(listing.price_from_cents)} USD · before tax & shipping</p></div>
-        <a href={listing.source_url} target="_blank" rel="noopener noreferrer">View merchant listing ↗</a>
-        <Button variant="outline" disabled={busy} onClick={() => run(() => inspectListing(listing.source_url))}>Check variants & stock</Button>
-      </article>)}</div></>}
-    </section>;
-  }
+
+  useEffect(() => {
+    if (!pickerOpen || !linkTask || linkTask.status !== 'queued') return;
+    const timer = setTimeout(() => {
+      const request = linkRequest.current;
+      api<CatalogTask>(`/catalog/tasks/${linkTask.task_id}`).then((task) => {
+        if (request === linkRequest.current) setLinkTask(task);
+      }).catch(() => {
+        if (request === linkRequest.current) setLinkTask({ ...linkTask });
+      });
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, [pickerOpen, linkTask]);
+
+  const requestedVariant = (() => {
+    try { return new URL(watchUrl).searchParams.get('variant'); }
+    catch { return null; }
+  })();
+  const linkProducts = (linkTask?.status === 'complete' ? linkTask.products : []).filter((product) =>
+    !requestedVariant || product.supports_checkout_demo === false || (product.source_url &&
+      new URL(product.source_url).searchParams.get('variant') === requestedVariant));
 
   async function run(action: () => Promise<void>) {
     setBusy(true);
@@ -322,9 +354,11 @@ function App() {
       await api<Permission>('/permissions', { method: 'POST', body: JSON.stringify(rules) }),
     );
   }
-  const visibleProducts = products.filter((p) => p.source_kind === 'merchant'
-    && `${p.name} ${p.category} ${p.seller} ${p.variant}`.toLowerCase().includes(catalogQuery.toLowerCase()));
-  const histories = usePriceHistory(visibleProducts.slice(0, visibleLimit), page === 'Overview' || page === 'Watchlist');
+  const watchedProducts = watches.flatMap((watch) => {
+    const product = watch.product || products.find((item) => item.id === watch.product_id);
+    return product ? [product] : [];
+  });
+  const histories = usePriceHistory([...new Map(watchedProducts.map((item) => [item.id, item])).values()].slice(0, 250), page === 'Watchlist');
   const SelectedIcon = selected ? icons[selected.icon as keyof typeof icons] || icons[selected.id as keyof typeof icons] || Package : Radar;
   const activeWatches = watches.filter((w) => w.status === 'active').length;
   const completed = orders.filter((o) => o.status === 'completed');
@@ -341,14 +375,6 @@ function App() {
           </span>
           DealOne<span className="brand-dot">.</span>
         </a>
-        <div className="workspace">
-          <span className="workspace-avatar">D</span>
-          <div>
-            Personal account<small>Price watches &amp; limits</small>
-          </div>
-          <ChevronRight size={15} />
-        </div>
-        <span className="nav-label">ACCOUNT</span>
         <nav>
           {[
             ['Overview', LayoutDashboard],
@@ -374,32 +400,10 @@ function App() {
           })}
         </nav>
         <div className="sidebar-bottom">
-          <div className="autopilot">
-            <ShieldCheck size={22} />
-            <strong>You set the limit</strong>
-            <p>Every sandbox permission issues its own card. Ask-first stays on unless you choose auto-run.</p>
-            <span>
-              <i /> {payments === 'nessie' ? 'Nessie settlement' : 'Simulated payments'}
-            </span>
-            {cardSummary?.issued_count != null && cardSummary.issued_count > 0 && (
-              <p>
-                {cardSummary.issued_count} active card
-                {cardSummary.issued_count === 1 ? '' : 's'} ·{' '}
-                {money(cardSummary.committed_limit_cents || 0)} committed
-              </p>
-            )}
-          </div>
           <button className="nav-item" onClick={() => setAdminOpen(true)}>
             <SlidersHorizontal size={18} />
             Demo controls
           </button>
-          <div className="profile">
-            <span className="profile-avatar">Y</span>
-            <div>
-              Signed in<small>Your price watches</small>
-            </div>
-            <CircleHelp size={17} />
-          </div>
         </div>
       </aside>
 
@@ -441,13 +445,13 @@ function App() {
                   : page === 'Watchlist'
                     ? 'Review active cards, budgets, and purchase modes in one place.'
                     : page === 'Activity'
-                      ? 'See charges, settlements, and declines as they happen.'
+                      ? 'Follow checkout runs, alerts, and sandbox transactions.'
                       : page === 'Evidence Gallery'
                         ? 'Visual proof of Playwright browser checkout runs with masked credentials and strict non-submission safeguards.'
-                        : 'Describe what you want. Gemini matches it to Keychron catalog items you can watch.'}
+                        : 'Describe what you want. Gemini can check product links from approved merchants.'}
               </p>
             </div>
-            <Button onClick={() => { const p = products.find((p) => p.can_request); if (p) openWatch(p); else setPickerOpen(true); }}>
+            <Button onClick={() => { setWatchUrl(''); setLinkTask(null); setLinkError(''); setError(''); setPickerOpen(true); }}>
               <Plus size={17} />
               Start a watch
             </Button>
@@ -483,9 +487,6 @@ function App() {
                         DealOne tracks the total, checks your limit, and only
                         <br className="desktop" /> moves when you say so — or when auto-buy is on.
                       </p>
-                      <button onClick={() => setPage('Shopping Assistant')}>
-                        Find an item with Gemini <ArrowUpRight size={17} />
-                      </button>
                     </div>
                     <div className="hero-art" aria-hidden="true">
                       <div className="orbit orbit-one" />
@@ -539,203 +540,105 @@ function App() {
                 </>
               )}
 
-              {(page === 'Overview' || page === 'Watchlist') && (
+              {page === 'Watchlist' && (
                 <>
-                  <div className="section-heading">
-                    <div>
-                      <h2>
-                        {page === 'Watchlist' ? 'Your watches' : 'Catalog'}{' '}
-                        <span>{page === 'Watchlist' ? watches.length : visibleProducts.length}</span>
-                      </h2>
-                      <p>
-                        {page === 'Watchlist'
-                          ? 'Permissions, card limits, and purchase status.'
-                          : 'Pick an item, set your max, and start watching.'}
-                      </p>
-                    </div>
-                    <span className="live-label">
-                      <i /> Merchant snapshots · refreshes paced by store
-                    </span>
-                  </div>
-                  {page === 'Watchlist' && (
-                    <div className="watch-list">
-                      {watches.length === 0 ? (
-                        <div className="empty">
-                          <Radar />
-                          <h3>No watches yet</h3>
-                          <p>Start a watch to issue a virtual card and set your price limit.</p>
-                        </div>
-                      ) : (
-                        watches.map((w) => {
-                          const product = products.find((p) => p.id === w.product_id);
-                          const canBuy =
-                            w.status === 'active' &&
-                            product != null && product.can_request && w.checkout_mode === 'sandbox' &&
-                            (w.sandbox_total_cents || product.total_cents) <= w.max_total_cents;
-                          return (
-                            <div className="watch-row" key={w.id}>
-                              <div>
-                                <strong>{product?.name}</strong>
-                                <small>{w.variant}</small>
-                                <small className="watch-meta">
-                                  {w.checkout_mode === 'sandbox' ? 'Sandbox banking demo' : 'Merchant price alert'}
-                                  {w.card
-                                    ? ` · Card •••• ${w.card.last4} · limit ${money(w.card.limit_cents)}`
-                                    : ''}
-                                </small>
-                              </div>
-                              <div>
-                                <small>All-in maximum</small>
-                                <strong>{money(w.max_total_cents)}</strong>
-                              </div>
-                              <span className={`status ${w.status}`}>{w.status}</span>
-                              <div className="row-actions">
-                                {product?.source_url && <a className="button button-outline" href={product.source_url} target="_blank" rel="noopener noreferrer">Review at store <ArrowUpRight size={14} /></a>}
-                                {w.card?.nessie_account_id && <Button variant="outline" onClick={() => run(async () => { setBankEvidence(await api(`/payments/cards/${w.id}/verify`)); setPage('Activity'); })}>Verify Nessie card</Button>}
-                                {w.status === 'draft' && (
-                                  <Button
-                                    disabled={busy}
-                                    onClick={() =>
-                                      run(async () => {
-                                        await api(`/permissions/${w.id}/activate`, {
-                                          method: 'POST',
-                                          body: JSON.stringify({ purchase_mode: 'ask_first' }),
-                                        });
-                                      })
-                                    }
-                                  >
-                                    Activate
-                                  </Button>
-                                )}
-                                {canBuy && (
-                                  <Button
-                                    disabled={busy}
-                                    onClick={() =>
-                                      run(async () => {
-                                        await api('/purchases', {
-                                          method: 'POST',
-                                          body: JSON.stringify({ permission_id: w.id }),
-                                        });
-                                      })
-                                    }
-                                  >
-                                    Approve purchase
-                                  </Button>
-                                )}
-                                {w.status === 'paused' && (
-                                  <Button
-                                    variant="outline"
-                                    disabled={busy}
-                                    onClick={() =>
-                                      run(async () => {
-                                        await api(`/permissions/${w.id}/resume`, { method: 'POST' });
-                                      })
-                                    }
-                                  >
-                                    Reviewed, continue
-                                  </Button>
-                                )}
-                                {['draft', 'active', 'paused', 'declined'].includes(w.status) && (
-                                  <Button
-                                    variant="ghost"
-                                    onClick={() =>
-                                      run(async () => {
-                                        await api(`/permissions/${w.id}/cancel`, { method: 'POST' });
-                                      })
-                                    }
-                                  >
-                                    Cancel
-                                  </Button>
-                                )}
-                              </div>
+                  <div className="section-heading"><h2>Your watches <span>{watches.length}</span></h2></div>
+                  <div className="watch-list">
+                    {watches.length === 0 ? (
+                      <div className="empty">
+                        <Radar />
+                        <h3>No watches yet</h3>
+                        <p>Paste a product link to set a price alert.</p>
+                      </div>
+                    ) : (
+                      watches.map((w) => {
+                        const product = w.product || products.find((p) => p.id === w.product_id);
+                        const canBuy =
+                          w.status === 'active' &&
+                          product != null && product.can_request && product.domain_approved !== false && w.checkout_mode === 'sandbox' &&
+                          (w.sandbox_total_cents || product.total_cents) <= w.max_total_cents;
+                        return (
+                          <div className="watch-row" key={w.id}>
+                            <div>
+                              <strong>{product?.name}</strong>
+                              <small>{w.variant}</small>
+                              {product?.domain_approved === false && <small>Checks paused · domain approval removed</small>}
+                              {product && <PriceHistory observations={histories[product.id]} name={product.name} />}
+                              <small className="watch-meta">
+                                {w.checkout_mode === 'sandbox' ? 'Sandbox banking demo' : 'Merchant price alert'}
+                                {w.card
+                                  ? ` · Card •••• ${w.card.last4} · limit ${money(w.card.limit_cents)}`
+                                  : ''}
+                              </small>
                             </div>
-                          );
-                        })
-                      )}
-                    </div>
-                  )}
-                  <div className="catalog-controls">
-                    <div className="catalog-tabs"><strong>Approved stores: Keychron + Epomaker</strong>
-                      <Button variant="outline" disabled={!products.some((p) => p.can_request)} onClick={() => { const p = products.find((p) => p.can_request); if (p) openWatch(p, 'sandbox'); }}>{payments === 'nessie' ? 'Try Nessie sandbox' : 'Try banking sandbox'}</Button>
-                    </div>
-                    <label className="catalog-search">Find an item
-                      <input aria-label="Find an item" placeholder="Filter discovered products…" value={catalogQuery} onChange={(e) => {setCatalogQuery(e.target.value); setVisibleLimit(24);}} />
-                    </label>
-                  </div>
-                  <form className="discovery-form" onSubmit={(event) => {event.preventDefault(); run(async () => {
-                    if (/^https?:\/\//i.test(discoveryQuery.trim())) await inspectListing(discoveryQuery.trim());
-                    else trackTask(await api<CatalogTask>('/catalog/discover', {method: 'POST', body: JSON.stringify({store: discoveryStore, query: discoveryQuery})}));
-                    setCatalogQuery(''); setVisibleLimit(24);
-                  });}}>
-                    <div><label htmlFor="approved-store">Approved store</label><select id="approved-store" value={discoveryStore} onChange={(event) => setDiscoveryStore(event.target.value)}><option value="keychron">Keychron · keychron.com</option><option value="epomaker">Epomaker · epomaker.com</option></select></div>
-                    <div><label htmlFor="discover-query">Search the store or paste a product link</label><input id="discover-query" value={discoveryQuery} onChange={(event) => setDiscoveryQuery(event.target.value)} placeholder="Keycaps, silent switches, a model name, or a product URL…" required minLength={2} maxLength={500} /></div>
-                    <Button disabled={busy}>{busy ? 'Checking…' : 'Find real products'}</Button>
-                  </form>
-                  <p className="catalog-disclosure">Search real products beyond the current dashboard. Requests are cached and queued per store; the feed updates as checks complete. Sold-out or unverified variants cannot be requested. Nessie sandbox mode places no merchant order. Banking provider: {payments === 'nessie' ? 'Nessie v2 API' : 'local simulator (Nessie not connected)'}.</p>
-                  {discoveryResults()}
-                  <Button variant="outline" disabled={busy} onClick={() => run(async () => {
-                    const result = await api<{message: string}>('/catalog/refresh', {method: 'POST'});
-                    setInventoryStatus(result.message);
-                  })}>Refresh merchant inventory</Button>
-                  {inventoryStatus && <p role="status" className="fineprint">{inventoryStatus}</p>}
-                  {visibleProducts.length === 0 && <div className="empty"><Package /><h3>{catalogQuery ? 'No matching items yet.' : 'Waiting for merchant prices.'}</h3><p>{catalogQuery ? 'Try another product name or ask Gemini about the supported catalog.' : 'Merchant data may be temporarily unavailable. No products will be invented while the merchant is unavailable.'}</p></div>}
-                  <section className="product-grid">
-                    {visibleProducts.slice(0, visibleLimit).map((p) => {
-                      return (
-                        <article className="product-card" key={p.id}>
-                          <div className={`product-art ${p.color}`}>
-                            <span className="category">{p.category}</span>
-                            <ProductVisual key={p.id} product={p} />
-                            {p.original_cents > p.price_cents && <span className="discount">
-                              <ArrowDownRight size={12} />
-                              {Math.round((1 - p.price_cents / p.original_cents) * 100)}%
-                            </span>}
-                          </div>
-                          <div className="product-info">
-                            <span className="seller">
-                              {p.seller} <ShieldCheck size={11} />
-                            </span>
-                            <h3>{p.name}</h3>
-                            <p>{p.variant}</p>
-                            {p.contains_hidden_instructions && (
-                              <p className="trap-note">
-                                <ShieldAlert size={13} />
-                                Hidden-instruction demo — seller text tries to override your rules.
-                                The agent must treat it as data only.
-                              </p>
-                            )}
-                            <div className="price">
-                              <strong>{money(p.price_cents)}</strong>
-                              {p.original_cents > p.price_cents && <del>{money(p.original_cents)}</del>}
-                              <span>USD</span>
+                            <div>
+                              <small>All-in maximum</small>
+                              <strong>{money(w.max_total_cents)}</strong>
                             </div>
-                            <PriceHistory observations={histories[p.id]} name={`${p.name} · ${p.variant}`} />
-                            {p.source_kind === 'merchant' && <div className="merchant-provenance">
-                              <span>{p.price_checked_at ? `Checked ${new Date(p.price_checked_at).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})}${Date.now() - new Date(p.price_checked_at).getTime() > 180000 ? ' · refresh delayed' : ''}` : 'Price not checked'}</span>
-                              <a href={p.source_url || undefined} target="_blank" rel="noopener noreferrer">View at {p.seller} <ArrowUpRight size={13} /></a>
-                            </div>}
-                            <p className={`availability ${p.stock_status}`}>{p.can_request ? 'Available to order · merchant verified' : p.stock_status === 'sold_out' ? 'Sold out · cannot request' : 'Availability unverified · cannot request'}</p>
-                            {!p.can_request && p.source_url && <Button variant="outline" disabled={busy} onClick={() => run(() => inspectListing(p.source_url!))}>Check current availability</Button>}
-                            <Button variant="outline" disabled={!p.can_request} onClick={() => openWatch(p)}>
-                              <Plus size={16} />
-                              Watch this item
-                              <ArrowUpRight size={15} />
-                            </Button>
+                            <span className={`status ${w.status}`}>{w.status}</span>
+                            <div className="row-actions">
+                              {product?.source_url && <a className="button button-outline" href={product.source_url} target="_blank" rel="noopener noreferrer">Review at store <ArrowUpRight size={14} /></a>}
+                              {w.card?.nessie_account_id && <Button variant="outline" onClick={() => run(async () => { setBankEvidence(await api(`/payments/cards/${w.id}/verify`)); setPage('Activity'); })}>Verify Nessie card</Button>}
+                              {w.status === 'draft' && product?.domain_approved !== false && (
+                                <Button
+                                  disabled={busy}
+                                  onClick={() =>
+                                    run(async () => {
+                                      await api(`/permissions/${w.id}/activate`, {
+                                        method: 'POST',
+                                        body: JSON.stringify({ purchase_mode: 'ask_first' }),
+                                      });
+                                    })
+                                  }
+                                >
+                                  Activate
+                                </Button>
+                              )}
+                              {canBuy && (
+                                <Button
+                                  disabled={busy}
+                                  onClick={() =>
+                                    run(async () => {
+                                      await api('/purchases', {
+                                        method: 'POST',
+                                        body: JSON.stringify({ permission_id: w.id }),
+                                      });
+                                    })
+                                  }
+                                >
+                                  Approve purchase
+                                </Button>
+                              )}
+                              {w.status === 'paused' && (
+                                <Button
+                                  variant="outline"
+                                  disabled={busy}
+                                  onClick={() =>
+                                    run(async () => {
+                                      await api(`/permissions/${w.id}/resume`, { method: 'POST' });
+                                    })
+                                  }
+                                >
+                                  Reviewed, continue
+                                </Button>
+                              )}
+                              {['draft', 'active', 'paused', 'declined'].includes(w.status) && (
+                                <Button
+                                  variant="ghost"
+                                  onClick={() =>
+                                    run(async () => {
+                                      await api(`/permissions/${w.id}/cancel`, { method: 'POST' });
+                                    })
+                                  }
+                                >
+                                  Cancel
+                                </Button>
+                              )}
+                            </div>
                           </div>
-                        </article>
-                      );
-                    })}
-                  </section>
-                  {visibleProducts.length > visibleLimit && <Button variant="outline" onClick={() => setVisibleLimit((count) => count+24)}>Show more verified variants ({visibleProducts.length-visibleLimit} remaining)</Button>}
-                  <div className="trust-strip">
-                    <LockKeyhole size={16} />
-                    <span>
-                      Your budget is a boundary. Tax and shipping are always included in checkout
-                      checks.
-                    </span>
-                    <span className="powered">
-                      Powered by Gemini <Sparkles size={13} />
-                    </span>
+                        );
+                      })
+                    )}
                   </div>
                 </>
               )}
@@ -744,7 +647,22 @@ function App() {
                 <div className="activity-grid">
                   <section className="panel">
                     <h2>Agent activity</h2>
-                    {notices.length === 0 ? (
+                    {checkoutRuns.map((demo) => (
+                      <div className="notice" key={demo.id}>
+                        <Camera size={18} />
+                        <div>
+                          <strong>{demo.product_name}</strong>
+                          <p><span className={`status ${demo.status}`}>{demo.status}</span></p>
+                          {demo.blocker_reason && <p>{demo.blocker_reason}</p>}
+                          {(demo.has_screenshot || demo.has_payment_screenshot) && <Button variant="outline" onClick={() => {
+                            setCheckoutDemos((runs) => [demo, ...runs.filter((run) => run.id !== demo.id)]);
+                            setPage('Evidence Gallery');
+                            requestAnimationFrame(() => document.getElementById(`evidence-${demo.id}`)?.scrollIntoView());
+                          }}>View evidence</Button>}
+                        </div>
+                      </div>
+                    ))}
+                    {notices.length === 0 && checkoutRuns.length === 0 ? (
                       <div className="empty">
                         <Bell />
                         <h3>All quiet for now.</h3>
@@ -848,7 +766,7 @@ function App() {
                     <Sparkles size={29} />
                   </div>
                   <h2>DealOne Shopping Assistant powered by Gemini</h2>
-                  <p>Ask about Keychron products, price history, or draft new purchase rules.</p>
+                  <p>Paste a product link, ask about price history, or draft watch rules.</p>
                   <span className={`status ${grok ? 'active' : 'draft'}`}>
                     {grok ? 'Gemini connected' : 'AI API key not configured'}
                   </span>
@@ -866,7 +784,6 @@ function App() {
                           const task = call.result as CatalogTask;
                           if (task.task_id) trackTask(task);
                         });
-                        setInventoryStatus(result.inventory?.message || '');
                         setRecommendations([...new Set(result.tools.filter((t) => t.tool === 'find_product' && Array.isArray(t.result))
                           .flatMap((t) => (t.result as Product[]).map((p) => p.id)))]);
                         const created = result.tools.find((t) => t.tool === 'create_watch_draft' && (t.result as Permission)?.status === 'draft');
@@ -920,7 +837,7 @@ function App() {
                       <h2>Autonomous Checkout Visual Evidence</h2>
                       <p className="muted">Playwright browser checkout demonstrations with synthetic payment profiles, input masking, and strict submission prevention.</p>
                     </div>
-                    <a href="/screenshots" target="_blank" rel="noopener noreferrer" className="btn" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}>
+                    <a href="/api/evidence" target="_blank" rel="noopener noreferrer" className="btn" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}>
                       <ExternalLink size={14} /> Full Evidence Page
                     </a>
                   </div>
@@ -936,7 +853,7 @@ function App() {
                       {checkoutDemos.map((demo) => {
                         const product = products.find((p) => p.id === demo.product_id);
                         return (
-                          <article key={demo.id} className="evidence-card-ui">
+                          <article id={`evidence-${demo.id}`} key={demo.id} className="evidence-card-ui">
                             <div className="evidence-card-header">
                               <div>
                                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap' }}>
@@ -975,6 +892,7 @@ function App() {
                                 <strong>Blocker / Outcome:</strong> {demo.blocker_reason}
                               </div>
                             )}
+                            <h4>Checkout overview</h4>
                             <div className="evidence-img-container">
                               {demo.has_screenshot ? (
                                 <a href={`/api/screenshots/${demo.id}`} target="_blank" rel="noopener noreferrer">
@@ -986,6 +904,14 @@ function App() {
                                 </div>
                               )}
                             </div>
+                            <h4>Payment close-up</h4>
+                            {demo.has_payment_screenshot ? (
+                              <div className="evidence-img-container payment-evidence">
+                                <a href={`/api/screenshots/${demo.id}/payment`} target="_blank" rel="noopener noreferrer">
+                                  <img src={`/api/screenshots/${demo.id}/payment`} alt="Masked payment close-up" loading="lazy" />
+                                </a>
+                              </div>
+                            ) : <p className="muted">Payment close-up unavailable for this run.</p>}
                           </article>
                         );
                       })}
@@ -1005,12 +931,30 @@ function App() {
       </div>
 
       {pickerOpen && <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="picker-title">
-        <button className="modal-close" aria-label="Close item picker" onClick={() => setPickerOpen(false)}><X size={21} /></button>
-        <h2 id="picker-title">Choose an available item</h2>
-        <p>No recently verified, available variants can be requested right now. Sold-out items remain visible so you can check their status.</p>
-        {products.map((p) => <div className="selected-product" key={p.id}><ProductVisual product={p} compact /><div><strong>{p.name}</strong><small>{p.variant} · {p.can_request ? 'Available' : p.stock_status === 'sold_out' ? 'Sold out' : 'Availability unverified'}</small></div><Button disabled={!p.can_request} onClick={() => openWatch(p)}>Watch this item</Button></div>)}
-        <Button disabled={busy} onClick={() => run(async () => { const result = await api<{message: string}>('/catalog/refresh', {method:'POST'}); setInventoryStatus(result.message); })}>Check merchant availability</Button>
-        <p role="status">{inventoryStatus || 'The merchant may limit refresh frequency. We never substitute invented stock.'}</p>
+        <button className="modal-close" aria-label="Close product link" onClick={() => {
+          linkRequest.current++;
+          setCheckingLink(false);
+          setPickerOpen(false);
+        }}><X size={21} /></button>
+        <h2 id="picker-title">Add a product link</h2>
+        <p>{approvedDomains.length ? `Approved domains · ${approvedDomains.map((domain) => domain.domain).join(', ')}` : 'No approved domains are available.'}</p>
+        <form onSubmit={(event) => { event.preventDefault(); void checkWatchLink(); }}>
+          <label htmlFor="watch-url">Product URL</label>
+          <input id="watch-url" type="url" value={watchUrl} onChange={(event) => {
+            setWatchUrl(event.target.value);
+            setLinkTask(null);
+            setLinkError('');
+          }} required maxLength={500} disabled={checkingLink} />
+          <Button disabled={checkingLink || approvedDomains.length === 0}>{checkingLink ? 'Checking…' : 'Check product link'}</Button>
+        </form>
+        {linkError && <p role="alert">{linkError}</p>}
+        {linkTask && <p role="status">{linkTask.message}</p>}
+        {linkTask?.status === 'complete' && linkProducts.length === 0 && <p>No verified variant matched this link.</p>}
+        {linkProducts.length > 1 && <h3>Choose a variant</h3>}
+        {linkProducts.map((product) => <div className="selected-product" key={product.id}>
+          <div><strong>{product.name}</strong><small>{product.variant} · {money(product.price_cents)} · {product.can_request ? 'Available' : product.stock_status === 'sold_out' ? 'Sold out' : 'Availability unverified'}</small></div>
+          <Button disabled={!product.can_request} onClick={() => openWatch(product)}>Watch this item</Button>
+        </div>)}
       </section></div>}
       {selected && (
         <div className="modal-backdrop">
@@ -1038,11 +982,11 @@ function App() {
               {selected.source_url && <a href={selected.source_url} target="_blank" rel="noopener noreferrer">View item <ArrowUpRight size={14} /></a>}
             </div>
             <p className="catalog-disclosure">{checkoutMode === 'sandbox' ? `${payments === 'nessie' ? 'Nessie v2 API' : 'Local simulator (Nessie API not connected)'} demonstration using this real item. The checkout total below is a test scenario, not a merchant offer. No real money moves and no merchant order is placed.` : 'Watch this real item and review its price at the store. Automatic retailer checkout is not connected.'}</p>
-            <label htmlFor="checkout-mode">Experience</label>
+            {selected.supports_checkout_demo !== false && <><label htmlFor="checkout-mode">Experience</label>
             <select id="checkout-mode" value={checkoutMode} onChange={(e) => setCheckoutMode(e.target.value as 'merchant_handoff' | 'sandbox')}>
               <option value="merchant_handoff">Real price watch and merchant checkout</option>
               <option value="sandbox">Nessie banking demonstration · same real item</option>
-            </select>
+            </select></>}
             {checkoutMode === 'sandbox' && <><label htmlFor="sandbox-total">Sandbox final total (USD, test scenario)</label><input id="sandbox-total" type="number" min="0.01" step="0.01" value={sandboxTotal} onChange={(e) => setSandboxTotal(e.target.value)} required /></>}
             {draft ? (
               <>
@@ -1123,7 +1067,7 @@ function App() {
                     id="rules-prompt"
                     value={prompt}
                     onChange={(e) => setPrompt(e.target.value)}
-                    placeholder={`Watch ${selected.name} under $${budget} for ${deadline} days, or describe a different item…`}
+                    placeholder={`Watch ${selected.name} under $${budget} for ${deadline} days…`}
                   />
                   <Button
                     variant="outline"
@@ -1134,8 +1078,7 @@ function App() {
                           method: 'POST',
                           body: JSON.stringify({ text: prompt }),
                         });
-                        const p = products.find((p) => p.id === r.product_id);
-                        if (p && p.can_request) { setSelected(p); setSandboxTotal((Math.min(p.price_cents * 0.9, r.max_total_cents) / 100).toFixed(2)); }
+                        if (r.product_id !== selected.id) throw new Error('Gemini matched a different product. Set the rules for this link below.');
                         setBudget(String(r.max_total_cents / 100));
                         setParsedExpiration(r.expires_at);
                         setDeadline(
@@ -1153,11 +1096,6 @@ function App() {
                     Fill my rules
                   </Button>
                 </div>
-                <label htmlFor="watch-product">Item to watch</label>
-                <select id="watch-product" value={selected.id} onChange={(e) => { const p = products.find((p) => p.id === e.target.value); if (p) openWatch(p); }}>
-                  {products.filter((p) => p.source_kind === 'merchant' && p.can_request).map((p) => <option key={p.id} value={p.id}>{p.name} · {p.variant} · {p.seller}</option>)}
-                </select>
-                <div className="divider">or set your rules</div>
                 <form
                   onSubmit={(e) => {
                     e.preventDefault();
@@ -1338,8 +1276,8 @@ function App() {
                     onChange={(e) => setSelectedDemoWatch(e.target.value)}
                   >
                     <option value="">Choose an active watch to demonstrate</option>
-                    {watches.filter((w) => w.status === 'active').map((w) => {
-                      const prod = products.find((p) => p.id === w.product_id);
+                    {watches.filter((w) => w.status === 'active' && w.product?.supports_checkout_demo !== false && w.product?.domain_approved !== false).map((w) => {
+                      const prod = w.product || products.find((p) => p.id === w.product_id);
                       return (
                         <option key={w.id} value={w.id}>
                           {prod?.name || w.product_id} ({w.variant}) · Limit {money(w.max_total_cents)} · {w.card ? `•••• ${w.card.last4}` : 'no card'}

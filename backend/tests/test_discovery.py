@@ -6,7 +6,7 @@ from sqlalchemy import select
 from app import discovery
 from app.catalog import store_product_url, requestable
 from app.config import settings
-from app.models import CatalogTask, Product, PriceObservation, Heartbeat, utcnow
+from app.models import ApprovedDomain, CatalogTask, Product, PriceObservation, Heartbeat, utcnow
 
 
 @pytest.mark.parametrize("url", ["https://evil.example/products/keycaps", "https://keychron.com.evil.example/products/a",
@@ -25,6 +25,8 @@ def test_dynamic_product_url_has_no_fixed_model_restriction():
 def test_search_cache_queue_and_variant_verification_are_shared(factory, db, monkeypatch):
     monkeypatch.setattr(settings(), "real_catalog_enabled", True)
     monkeypatch.setattr(discovery, "SessionLocal", factory)
+    db.add(ApprovedDomain(domain="www.epomaker.com"))
+    db.commit()
     requests = []
     def transport(request):
         requests.append(request)
@@ -60,6 +62,8 @@ def test_search_cache_queue_and_variant_verification_are_shared(factory, db, mon
 def test_store_cooldowns_are_independent_and_import_is_deduplicated(factory, db, monkeypatch):
     monkeypatch.setattr(settings(), "real_catalog_enabled", True)
     monkeypatch.setattr(discovery, "SessionLocal", factory)
+    db.add(ApprovedDomain(domain="www.epomaker.com"))
+    db.commit()
     db.add(Heartbeat(id="catalog:gate", updated_at=utcnow())); db.commit()
     requests = []
     def transport(request):
@@ -82,3 +86,41 @@ def test_batch_history_contains_observations_only(client, db):
     assert result.status_code == 200
     assert result.json()["not-tracked"] == []
     assert [row["price_cents"] for row in result.json()["epomaker-99"]] == [1500]
+
+
+def test_generic_link_requires_an_approved_host_and_a_verified_offer(factory, db, monkeypatch):
+    from app import merchant_links
+    from app.catalog import revalidate_product
+
+    monkeypatch.setattr(settings(), "real_catalog_enabled", True)
+    monkeypatch.setattr(discovery, "SessionLocal", factory)
+    monkeypatch.setattr(merchant_links, "gemini_offer", lambda excerpt: None)
+    requests = []
+
+    def fetch(url):
+        requests.append(url)
+        if "second.example" in url:
+            return "<h1>No product offer</h1>"
+        return '''<script type="application/ld+json">
+        {"@type":"Product","name":"Fixture speaker","offers":{"price":"25.00",
+        "priceCurrency":"USD","availability":"https://schema.org/InStock"}}
+        </script>'''
+
+    monkeypatch.setattr(merchant_links, "fetch_page", fetch)
+    allowed = ApprovedDomain(domain="merchant.example")
+    db.add_all([allowed, ApprovedDomain(domain="second.example")])
+    db.commit()
+    with pytest.raises(ValueError, match="whitelist"):
+        discovery.inspect(db, "https://merchant.example.unapproved.example/product")
+    assert requests == []
+
+    verified = discovery.inspect(db, "https://merchant.example/product")
+    assert verified["status"] == "complete"
+    assert verified["products"][0]["can_request"]
+    assert not verified["products"][0]["supports_checkout_demo"]
+    assert discovery.inspect(db, "https://second.example/product")["status"] == "unavailable"
+
+    db.delete(allowed)
+    db.commit()
+    with pytest.raises(ValueError, match="whitelist"):
+        revalidate_product(db, db.get(Product, verified["products"][0]["id"]))

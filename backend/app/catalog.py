@@ -14,7 +14,8 @@ from sqlalchemy import text, select
 
 from .config import settings
 from .db import SessionLocal
-from .models import Product, PriceObservation, Heartbeat, ApprovedDomain, CatalogTask, utcnow
+from .merchant_links import is_approved, link_id
+from .models import Product, PriceObservation, Heartbeat, CatalogTask, utcnow
 
 log = logging.getLogger("dealone.catalog")
 
@@ -113,8 +114,7 @@ def scrape_product_browser(handle: str, db=None):
     url = f"https://www.keychron.com/products/{handle}"
     target_host = urlparse(url).netloc.lower()
     if db:
-        approved = set(db.scalars(select(ApprovedDomain.domain)).all())
-        if approved and target_host not in approved and not any(target_host.endswith("." + d) for d in approved):
+        if not is_approved(db, f"https://{target_host}"):
             raise ValueError(f"Domain '{target_host}' is not in approved domains whitelist")
 
     with sync_playwright() as pw:
@@ -175,6 +175,8 @@ def refresh_catalog(force: bool = False):
         if gate and gate.updated_at + timedelta(seconds=interval_seconds) > now:
             return {"status": "scheduled", "next_refresh_at": (gate.updated_at + timedelta(seconds=interval_seconds)).isoformat(),
                     "message": "Showing the latest verified inventory while respecting the merchant rate limit"}
+        if not is_approved(db, "https://www.keychron.com"):
+            return {"status": "disabled", "message": "Keychron is not on the approved domains whitelist"}
         choices = []
         for index, source in reversed(list(enumerate(SOURCES))):
             attempt = db.get(Heartbeat, f"catalog:{index}")
@@ -223,6 +225,8 @@ def refresh_catalog(force: bool = False):
 def approved_product(product):
     if not product or product.source_kind != "merchant" or not product.source_url:
         return False
+    if product.id.startswith("link-"):
+        return product.id == link_id(product.source_url)
     try:
         store, _ = store_product_url(product.source_url)
         variant = parse_qs(urlparse(product.source_url).query).get("variant", [""])[0]
@@ -260,4 +264,6 @@ def revalidate_product(db, product):
         raise ValueError("This legacy demonstration item is no longer supported")
     # A verified snapshot avoids turning every UI command into a throttled merchant request.
     # Only a recent verified exact-variant snapshot may be used. Older data fails closed.
+    if not is_approved(db, product.source_url):
+        raise ValueError("This domain is not on the approved domains whitelist")
     ensure_requestable(product)
