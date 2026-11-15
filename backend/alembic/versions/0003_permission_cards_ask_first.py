@@ -1,8 +1,8 @@
 """Per-permission virtual cards, ask-first mode, and product descriptions."""
 from alembic import op
 
-revision = "0002"
-down_revision = "0001"
+revision = "0003"
+down_revision = "0002"
 
 
 def upgrade():

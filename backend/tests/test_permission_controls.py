@@ -97,3 +97,21 @@ def test_hidden_instruction_product_is_seeded_as_data(db):
     # Product text must never become an executable purchase path on its own.
     with pytest.raises(PurchaseRejected, match="not found"):
         execute_tool("request_purchase", PermissionReference(permission_id="not-a-real-permission"), db, "owner")
+
+
+def test_grok_cannot_bypass_ask_first(db):
+    rule = permission(db, purchase_mode="ask_first", max_total_cents=25000)
+    with pytest.raises(PurchaseRejected, match="requires your approval"):
+        execute_tool("request_purchase", PermissionReference(permission_id=rule.id), db, rule.owner)
+    assert db.scalar(select(Order).where(Order.permission_id == rule.id)) is None
+
+
+def test_ask_first_does_not_alert_above_the_budget(factory, db, monkeypatch):
+    from app import worker
+    rule = permission(db, purchase_mode="ask_first", max_total_cents=10000)
+    db.commit()
+    monkeypatch.setattr(worker, "SessionLocal", factory)
+    scan()
+    db.expire_all()
+    assert db.scalar(select(Notification).where(Notification.event_key == f"offer:{rule.id}")) is None
+    assert db.scalar(select(Order).where(Order.permission_id == rule.id)) is None

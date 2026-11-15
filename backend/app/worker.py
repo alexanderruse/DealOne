@@ -42,12 +42,13 @@ def scan():
                                f"Price alert: {product.name} is ${product.price_cents/100:.2f} at {product.seller}. Tax, shipping and availability need confirmation at the store. Open the listing to review.")
                     continue
                 if total(product) <= permission.max_total_cents:
-                    prepare_order(db, permission.id)
-                else:
-                    # Ask-first: alert once; never purchase until the user explicitly approves.
-                    notify(db, permission.owner, f"offer:{permission.id}",
-                           f"Price matched your rules: {product.name} is ${total(product)/100:.2f} all in. "
-                           "Approve the purchase when you are ready.")
+                    if permission.purchase_mode == "auto_buy":
+                        prepare_order(db, permission.id)
+                    else:
+                        # Ask-first: alert once; never purchase until the user explicitly approves.
+                        notify(db, permission.owner, f"offer:{permission.id}",
+                               f"Price matched your rules: {product.name} is ${total(product)/100:.2f} all in. "
+                               "Approve the purchase when you are ready.")
         except PurchaseRejected as exc:
             event("purchase_not_eligible", permission_id=permission_id, reason=str(exc))
 

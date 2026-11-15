@@ -48,7 +48,9 @@ type Product = {
   image_url: string | null;
   icon: string;
   price_checked_at: string | null;
+  contains_hidden_instructions?: boolean;
 };
+type PermissionCard = { last4: string; limit_cents: number; status: string; available_cents: number; nessie_account_id?: string | null };
 type Permission = {
   id: string;
   product_id: string;
@@ -91,7 +93,7 @@ type Ledger = { charges: LedgerEntry[]; nessie: LedgerEntry[] };
 type Notice = { id: string; message: string; created_at: string };
 type Observation = { price_cents: number; observed_at: string };
 type Rules = { product_id: string; max_total_cents: number; expires_at: string; quantity: 1 };
-const icons = { headphones: Headphones, keyboard: Keyboard, speaker: AudioLines, mouse: Mouse, package: Package };
+const icons = { headphones: Headphones, keyboard: Keyboard, speaker: AudioLines, mouse: Mouse, 'usb-hub': Usb, package: Package };
 function ProductVisual({ product, compact = false }: { product: Product; compact?: boolean }) {
   const [failed, setFailed] = useState(false);
   const Icon = icons[product.id as keyof typeof icons] || icons[product.icon as keyof typeof icons] || Package;
@@ -855,7 +857,7 @@ function App() {
                     <strong>{new Date(draft.expires_at).toLocaleString()}</strong>
                   </div>
                 </div>
-                <fieldset className="mode-picker">
+                {selected.source_kind !== 'merchant' && <fieldset className="mode-picker">
                   <legend>When the price matches</legend>
                   <label className={purchaseMode === 'ask_first' ? 'selected' : ''}>
                     <input
@@ -881,9 +883,9 @@ function App() {
                       <small>One purchase when every rule matches.</small>
                     </span>
                   </label>
-                </fieldset>
+                </fieldset>}
                 <p className="fineprint">
-                  {selected.source_kind === 'merchant' ? 'Activate to monitor this item and receive price alerts. The merchant confirms taxes, shipping and availability before you purchase.' : 'Activating lets DealOne automatically complete one simulated purchase when every rule matches. Tax and shipping must fit your maximum.'}
+                  {selected.source_kind === 'merchant' ? 'Activate to monitor this item and receive price alerts. The merchant confirms taxes, shipping and availability before you purchase.' : purchaseMode === 'ask_first' ? 'DealOne sends an alert when your rules match. You approve before any simulated purchase.' : 'Activating lets DealOne automatically complete one simulated purchase when every rule matches. Tax and shipping must fit your maximum.'}
                 </p>
                 <Button
                   className="full-width"
@@ -900,7 +902,7 @@ function App() {
                   }
                 >
                   <ShieldCheck size={17} />
-                  {selected.source_kind === 'merchant' ? 'Activate price watch' : 'Activate automatic purchase'}
+                  {selected.source_kind === 'merchant' || purchaseMode === 'ask_first' ? 'Activate price watch' : 'Activate automatic purchase'}
                 </Button>
               </>
             ) : (
