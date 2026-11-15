@@ -101,6 +101,8 @@ type Ledger = { charges: LedgerEntry[]; nessie: LedgerEntry[] };
 type Notice = { id: string; message: string; created_at: string };
 type Observation = { price_cents: number; observed_at: string };
 type Rules = { product_id: string; max_total_cents: number; expires_at: string; quantity: 1 };
+type Listing = {handle: string; name: string; seller: string; source_url: string; image_url: string | null; price_from_cents: number};
+type CatalogTask = {task_id: string; store: string; status: string; message: string; checked_at?: string; next_check_at?: string; listings: Listing[]; products: Product[]};
 const icons = { headphones: Headphones, keyboard: Keyboard, speaker: AudioLines, mouse: Mouse, package: Package };
 function ProductVisual({ product, compact = false }: { product: Product; compact?: boolean }) {
   const [failed, setFailed] = useState(false);
@@ -132,6 +134,11 @@ function App() {
   const [selected, setSelected] = useState<Product | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [inventoryStatus, setInventoryStatus] = useState('');
+  const [discoveryQuery, setDiscoveryQuery] = useState('');
+  const [discoveryStore, setDiscoveryStore] = useState('keychron');
+  const [catalogTasks, setCatalogTasks] = useState<CatalogTask[]>([]);
+  const [taskIds, setTaskIds] = useState<string[]>([]);
+  const [visibleLimit, setVisibleLimit] = useState(24);
   const [budget, setBudget] = useState('180');
   const [deadline, setDeadline] = useState('7');
   const [parsedExpiration, setParsedExpiration] = useState<string | null>(null);
@@ -166,13 +173,9 @@ function App() {
     api<Ledger>('/payments/ledger')
       .then(setLedger)
       .catch(() => setLedger({ charges: [], nessie: [] }))]);
-    const history = await Promise.all(
-      p.map(
-        async (product) =>
-          [product.id, await api<Observation[]>(`/products/${product.id}/prices`)] as const,
-      ),
-    );
-    setHistories(Object.fromEntries(history));
+    setHistories(await api<Record<string, Observation[]>>('/price-history', {
+      method: 'POST', body: JSON.stringify({product_ids: p.map((product) => product.id)}),
+    }));
     await bankReads;
   }
   useEffect(() => {
@@ -195,6 +198,41 @@ function App() {
       clearInterval(timer);
     };
   }, []);
+
+  function trackTask(task: CatalogTask) {
+    setTaskIds((ids) => [...new Set([...ids, task.task_id])].slice(-8));
+    setCatalogTasks((tasks) => [...tasks.filter((old) => old.task_id !== task.task_id), task].slice(-8));
+    setInventoryStatus(task.message);
+  }
+  useEffect(() => {
+    if (!taskIds.length) return;
+    let active = true;
+    const update = async () => {
+      const tasks = await Promise.all(taskIds.map((id) => api<CatalogTask>(`/catalog/tasks/${id}`)));
+      if (!active) return;
+      setCatalogTasks(tasks);
+      setRecommendations([...new Set(tasks.flatMap((task) => task.products.map((product) => product.id)))]);
+    };
+    update().catch(() => {});
+    const timer = setInterval(() => { update().catch(() => {}); }, 4000);
+    return () => {active = false; clearInterval(timer);};
+  }, [taskIds.join(',')]);
+
+  async function inspectListing(url: string) {
+    trackTask(await api<CatalogTask>('/catalog/inspect', {method: 'POST', body: JSON.stringify({url})}));
+  }
+  function discoveryResults() {
+    const listings = [...new Map(catalogTasks.flatMap((task) => task.listings).map((listing) => [listing.source_url, listing])).values()];
+    return <section className="discovery-results" aria-label="Live merchant discovery">
+      {catalogTasks.length > 0 && <div className="discovery-progress" role="status">{catalogTasks.slice(-2).map((task) => <p key={task.task_id}><strong>{task.store} · {task.status}</strong> — {task.message}{task.checked_at ? ` Observed ${new Date(task.checked_at).toLocaleTimeString()}.` : ''}{task.status === 'queued' && task.next_check_at ? ` Next eligible check: ${new Date(task.next_check_at).toLocaleTimeString()}.` : ''}</p>)}</div>}
+      {listings.length > 0 && <><h3>Found at the store</h3><p>Real listing previews. Check variants to verify stock, exact price, and start a watch.</p><div className="discovery-grid">{listings.map((listing) => <article className="discovery-card" key={listing.source_url}>
+        {listing.image_url ? <img src={listing.image_url} alt={listing.name} loading="lazy" /> : <Package size={48} />}
+        <div><small>{listing.seller}</small><h4>{listing.name}</h4><p>From {money(listing.price_from_cents)} USD · before tax & shipping</p></div>
+        <a href={listing.source_url} target="_blank" rel="noopener noreferrer">View merchant listing ↗</a>
+        <Button variant="outline" disabled={busy} onClick={() => run(() => inspectListing(listing.source_url))}>Check variants & stock</Button>
+      </article>)}</div></>}
+    </section>;
+  }
 
   async function run(action: () => Promise<void>) {
     setBusy(true);
@@ -272,11 +310,12 @@ function App() {
             return (
               <button
                 key={String(label)}
+                aria-label={String(label)}
                 className={page === label ? 'nav-item active' : 'nav-item'}
                 onClick={() => setPage(String(label))}
               >
                 <ItemIcon size={18} />
-                {String(label)}
+                <span className="nav-text">{String(label)}</span>
                 {label === 'Watchlist' && <span className="nav-count">{activeWatches}</span>}
               </button>
             );
@@ -560,14 +599,24 @@ function App() {
                     </div>
                   )}
                   <div className="catalog-controls">
-                    <div className="catalog-tabs"><strong>Keychron official store</strong>
+                    <div className="catalog-tabs"><strong>Approved stores: Keychron + Epomaker</strong>
                       <Button variant="outline" disabled={!products.some((p) => p.can_request)} onClick={() => { const p = products.find((p) => p.can_request); if (p) openWatch(p, 'sandbox'); }}>{payments === 'nessie' ? 'Try Nessie sandbox' : 'Try banking sandbox'}</Button>
                     </div>
                     <label className="catalog-search">Find an item
-                      <input aria-label="Find an item" placeholder="Keyboard, mouse, Keychron…" value={catalogQuery} onChange={(e) => setCatalogQuery(e.target.value)} />
+                      <input aria-label="Find an item" placeholder="Filter discovered products…" value={catalogQuery} onChange={(e) => {setCatalogQuery(e.target.value); setVisibleLimit(24);}} />
                     </label>
                   </div>
-                  <p className="catalog-disclosure">Real products from one approved store. The merchant confirms stock for each variant. Sold-out or unverified items cannot be requested. Nessie sandbox mode demonstrates banking without placing a merchant order. Banking provider: {payments === 'nessie' ? 'Nessie v2 API' : 'local simulator (Nessie not connected)'}.</p>
+                  <form className="discovery-form" onSubmit={(event) => {event.preventDefault(); run(async () => {
+                    if (/^https?:\/\//i.test(discoveryQuery.trim())) await inspectListing(discoveryQuery.trim());
+                    else trackTask(await api<CatalogTask>('/catalog/discover', {method: 'POST', body: JSON.stringify({store: discoveryStore, query: discoveryQuery})}));
+                    setCatalogQuery(''); setVisibleLimit(24);
+                  });}}>
+                    <div><label htmlFor="approved-store">Approved store</label><select id="approved-store" value={discoveryStore} onChange={(event) => setDiscoveryStore(event.target.value)}><option value="keychron">Keychron · keychron.com</option><option value="epomaker">Epomaker · epomaker.com</option></select></div>
+                    <div><label htmlFor="discover-query">Search the store or paste a product link</label><input id="discover-query" value={discoveryQuery} onChange={(event) => setDiscoveryQuery(event.target.value)} placeholder="Keycaps, silent switches, a model name, or a product URL…" required minLength={2} maxLength={500} /></div>
+                    <Button disabled={busy}>{busy ? 'Checking…' : 'Find real products'}</Button>
+                  </form>
+                  <p className="catalog-disclosure">Search real products beyond the current dashboard. Requests are cached and queued per store; the feed updates as checks complete. Sold-out or unverified variants cannot be requested. Nessie sandbox mode places no merchant order. Banking provider: {payments === 'nessie' ? 'Nessie v2 API' : 'local simulator (Nessie not connected)'}.</p>
+                  {discoveryResults()}
                   <Button variant="outline" disabled={busy} onClick={() => run(async () => {
                     const result = await api<{message: string}>('/catalog/refresh', {method: 'POST'});
                     setInventoryStatus(result.message);
@@ -575,7 +624,7 @@ function App() {
                   {inventoryStatus && <p role="status" className="fineprint">{inventoryStatus}</p>}
                   {visibleProducts.length === 0 && <div className="empty"><Package /><h3>{catalogQuery ? 'No matching items yet.' : 'Waiting for merchant prices.'}</h3><p>{catalogQuery ? 'Try another product name or ask Grok about the supported catalog.' : 'Merchant data may be temporarily unavailable. No products will be invented while the merchant is unavailable.'}</p></div>}
                   <section className="product-grid">
-                    {visibleProducts.map((p) => {
+                    {visibleProducts.slice(0, visibleLimit).map((p) => {
                       const history = histories[p.id] || [];
                       const chart = history.slice(-30).map((x) => x.price_cents);
                       const max = Math.max(...chart, 1);
@@ -623,21 +672,23 @@ function App() {
                                 <polyline
                                   points={points}
                                   fill="none"
-                                  stroke="#0070a8"
+                                  stroke="#b91c2b"
                                   strokeWidth="2"
                                   vectorEffect="non-scaling-stroke"
                                 />
                               </svg>
                               <div>
-                                <span>Observed price history</span>
+                                <span>{history.length > 1 ? `${history.length} observed prices` : 'Tracking started · history builds over time'}</span>
                                 <span>{p.source_kind === 'merchant' ? 'Before tax & shipping' : `All in ${money(p.total_cents)}`}</span>
                               </div>
+                              {history.length > 1 && <p className="history-range">Low {money(Math.min(...chart))} · High {money(Math.max(...chart))}<br />{new Date(history[0].observed_at).toLocaleDateString()} – {new Date(history[history.length-1].observed_at).toLocaleDateString()}</p>}
                             </div>
                             {p.source_kind === 'merchant' && <div className="merchant-provenance">
                               <span>{p.price_checked_at ? `Checked ${new Date(p.price_checked_at).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})}${Date.now() - new Date(p.price_checked_at).getTime() > 180000 ? ' · refresh delayed' : ''}` : 'Price not checked'}</span>
                               <a href={p.source_url || undefined} target="_blank" rel="noopener noreferrer">View at {p.seller} <ArrowUpRight size={13} /></a>
                             </div>}
                             <p className={`availability ${p.stock_status}`}>{p.can_request ? 'Available to order · merchant verified' : p.stock_status === 'sold_out' ? 'Sold out · cannot request' : 'Availability unverified · cannot request'}</p>
+                            {!p.can_request && p.source_url && <Button variant="outline" disabled={busy} onClick={() => run(() => inspectListing(p.source_url!))}>Check current availability</Button>}
                             <Button variant="outline" disabled={!p.can_request} onClick={() => openWatch(p)}>
                               <Plus size={16} />
                               Watch this item
@@ -648,6 +699,7 @@ function App() {
                       );
                     })}
                   </section>
+                  {visibleProducts.length > visibleLimit && <Button variant="outline" onClick={() => setVisibleLimit((count) => count+24)}>Show more verified variants ({visibleProducts.length-visibleLimit} remaining)</Button>}
                   <div className="trust-strip">
                     <LockKeyhole size={16} />
                     <span>
@@ -769,7 +821,7 @@ function App() {
                     <Sparkles size={29} />
                   </div>
                   <h2>Tell Grok what you’re shopping for</h2>
-                  <p>Ask about products, price history, or your activated watches.</p>
+                  <p>Find any searchable product at Keychron or Epomaker, inspect a product link, or ask about price history and your watches.</p>
                   <span className={`status ${grok ? 'active' : 'draft'}`}>
                     {grok ? 'Grok connected' : 'Grok API key not configured'}
                   </span>
@@ -783,6 +835,10 @@ function App() {
                         );
                         setAnswer(result.message);
                         setToolCalls(result.tools.map((t) => t.tool));
+                        result.tools.filter((t) => ['discover_products', 'inspect_product'].includes(t.tool)).forEach((call) => {
+                          const task = call.result as CatalogTask;
+                          if (task.task_id) trackTask(task);
+                        });
                         setInventoryStatus(result.inventory?.message || '');
                         setRecommendations([...new Set(result.tools.filter((t) => t.tool === 'find_product' && Array.isArray(t.result))
                           .flatMap((t) => (t.result as Product[]).map((p) => p.id)))]);
@@ -801,7 +857,7 @@ function App() {
                       id="chat"
                       value={chat}
                       onChange={(e) => setChat(e.target.value)}
-                      placeholder="Find a Keychron keyboard and show me its price history…"
+                      placeholder="Find silent switches at Epomaker, or track a product link from Keychron…"
                       required
                       minLength={5}
                     />
@@ -817,6 +873,7 @@ function App() {
                       {toolCalls.length > 0 && <small>Tools used: {toolCalls.join(' → ')}</small>}
                     </div>
                   )}
+                  {discoveryResults()}
                   {recommendations.length > 0 && <div className="grok-products" aria-label="Grok product matches">
                     {products.filter((p) => recommendations.includes(p.id)).map((p) => <div className="grok-product" key={p.id}>
                       <ProductVisual key={p.id} product={p} compact />
@@ -991,7 +1048,7 @@ function App() {
                 </div>
                 <label htmlFor="watch-product">Item to watch</label>
                 <select id="watch-product" value={selected.id} onChange={(e) => { const p = products.find((p) => p.id === e.target.value); if (p) openWatch(p); }}>
-                  {products.filter((p) => p.source_kind === 'merchant' && p.can_request).map((p) => <option key={p.id} value={p.id}>{p.name} · {p.seller}</option>)}
+                  {products.filter((p) => p.source_kind === 'merchant' && p.can_request).map((p) => <option key={p.id} value={p.id}>{p.name} · {p.variant} · {p.seller}</option>)}
                 </select>
                 <div className="divider">or set your rules</div>
                 <form
