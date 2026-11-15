@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from uuid import uuid4
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from .db import Base
 
@@ -135,3 +135,44 @@ class Heartbeat(Base):
     __tablename__ = "heartbeats"
     id: Mapped[str] = mapped_column(String(30), primary_key=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ApprovedDomain(Base):
+    __tablename__ = "approved_domains"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=identifier)
+    domain: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(100), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AISpendRecord(Base):
+    __tablename__ = "ai_spend_records"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=identifier)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    purpose: Mapped[str] = mapped_column(String(50))  # assistant_chat, rules_parse, checkout_demo
+    model: Mapped[str] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(20), default="reserved", index=True)  # reserved, settled, failed
+    estimated_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    actual_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    generation_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+
+class CheckoutDemoRun(Base):
+    __tablename__ = "checkout_demo_runs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=identifier)
+    permission_id: Mapped[str] = mapped_column(ForeignKey("permissions.id"), index=True)
+    owner: Mapped[str] = mapped_column(String(36), index=True)
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"))
+    trigger_type: Mapped[str] = mapped_column(String(30))  # manual_admin, price_drop
+    status: Mapped[str] = mapped_column(String(30), default="queued", index=True)  # queued, running, completed, blocked, failed
+    blocker_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    nessie_verified_limit_cents: Mapped[int] = mapped_column(Integer, default=0)
+    fields_completed: Mapped[str] = mapped_column(Text, default="[]")  # JSON encoded list of completed fields
+    screenshot_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_submitted: Mapped[bool] = mapped_column(Boolean, default=False)  # strictly False
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+

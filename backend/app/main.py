@@ -2,21 +2,23 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 from html import escape
 import json
+from pathlib import Path
 import secrets
 from uuid import uuid4
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 from .config import settings
 from .db import get_db
 from .models import (Product, Permission, Order, PriceObservation, Notification, Heartbeat,
-                     PaymentAuthorization, VirtualCard, BankCharge, utcnow)
+                     PaymentAuthorization, VirtualCard, BankCharge,
+                     ApprovedDomain, AISpendRecord, CheckoutDemoRun, utcnow)
 from . import payments
 from .payments import PaymentUnavailable
 from .schemas import (Rules, ActivateRequest, ParseRequest, AssistantRequest, PriceChange,
-                      CreditLimitChange, PermissionReference)
+                      CreditLimitChange, PermissionReference, ApprovedDomainCreate, CheckoutDemoRequest)
 from .services import (serialize, product_view, permission_view, issue_card, void_card, prepare_order,
                        complete_order, cancel_order, cancel_deadline, resume_after_review, PurchaseRejected, total)
 
@@ -102,7 +104,15 @@ def worker_health(db: Session = Depends(get_db)):
 
 @app.get("/api/session")
 def session(user: str = Depends(owner)):
-    return {"session_id": user, "grok_configured": bool(settings().xai_api_key), "payments": settings().payments_mode, "real_catalog_enabled": settings().real_catalog_enabled}
+    ai_ready = bool(settings().openrouter_api_key)
+    return {
+        "session_id": user,
+        "ai_configured": ai_ready,
+        "grok_configured": ai_ready,
+        "model": settings().openrouter_model,
+        "payments": settings().payments_mode,
+        "real_catalog_enabled": settings().real_catalog_enabled,
+    }
 
 
 @app.get("/api/payments/card")
@@ -185,7 +195,7 @@ def parse(body: ParseRequest, user: str = Depends(owner), db: Session = Depends(
     except HTTPException:
         raise
     except Exception:
-        raise HTTPException(502, "Grok request failed. Check provider configuration or use the manual rule form.")
+        raise HTTPException(502, "AI assistant request failed. Check provider configuration or use the manual rule form.")
 
 
 @app.post("/api/assistant")
@@ -197,14 +207,14 @@ def assistant(body: AssistantRequest, user: str = Depends(owner), db: Session = 
         db.expire_all()
         result = assistant(body.text, db, user)
         tools = ", ".join(call["tool"] for call in result["tools"]) or "answered without tools"
-        db.add(Notification(owner=user, event_key=f"grok:{uuid4()}", message=f"Grok command: {body.text[:160]} · {tools}. Inventory: {inventory['status']}."))
+        db.add(Notification(owner=user, event_key=f"assistant:{uuid4()}", message=f"Assistant command: {body.text[:160]} · {tools}. Inventory: {inventory['status']}."))
         db.commit()
         return {**result, "inventory": inventory}
     except HTTPException:
         raise
     except Exception:
         db.rollback()
-        raise HTTPException(502, "Grok request failed. Your purchase rules remain enforced.")
+        raise HTTPException(502, "DealOne Shopping Assistant request failed. Your purchase rules remain enforced.")
 
 
 @app.post("/api/catalog/refresh")
@@ -430,3 +440,345 @@ def submit_storefront_order(order_id: str, db: Session = Depends(get_db)):
         # Persist decline / validation side effects before returning the 409.
         db.commit()
         raise
+
+
+@app.get("/api/ai/budget")
+def ai_budget(db: Session = Depends(get_db)):
+    from .ai import get_ai_budget_summary
+    return get_ai_budget_summary(db)
+
+
+@app.get("/api/demo/approved-domains")
+def list_approved_domains(db: Session = Depends(get_db)):
+    domains = list(db.scalars(select(ApprovedDomain).order_by(ApprovedDomain.created_at.asc())))
+    return [serialize(d) for d in domains]
+
+
+@app.post("/api/demo/approved-domains", dependencies=[Depends(admin)])
+def add_approved_domain(body: ApprovedDomainCreate, db: Session = Depends(get_db)):
+    clean_domain = body.domain.strip().lower()
+    if clean_domain.startswith("https://"):
+        clean_domain = clean_domain[8:]
+    elif clean_domain.startswith("http://"):
+        clean_domain = clean_domain[7:]
+    clean_domain = clean_domain.split("/")[0].strip()
+    if not clean_domain:
+        raise HTTPException(422, "Invalid domain format")
+    existing = db.scalar(select(ApprovedDomain).where(ApprovedDomain.domain == clean_domain))
+    if existing:
+        raise HTTPException(409, "Domain is already on the approved whitelist")
+    domain_record = ApprovedDomain(
+        domain=clean_domain,
+        display_name=body.display_name or clean_domain,
+    )
+    db.add(domain_record)
+    db.commit()
+    return serialize(domain_record)
+
+
+@app.delete("/api/demo/approved-domains/{domain_id}", dependencies=[Depends(admin)])
+def delete_approved_domain(domain_id: str, db: Session = Depends(get_db)):
+    domain = db.get(ApprovedDomain, domain_id)
+    if not domain:
+        raise HTTPException(404, "Approved domain not found")
+    db.delete(domain)
+    db.commit()
+    return {"status": "deleted", "id": domain_id}
+
+
+@app.post("/api/demo/checkout-demo")
+def trigger_checkout_demo(body: CheckoutDemoRequest, background_tasks: BackgroundTasks,
+                          request: Request, user: str = Depends(owner), db: Session = Depends(get_db)):
+    # Check if admin token is present or caller is owner
+    admin_token = request.headers.get("x-demo-admin-token", "")
+    is_admin = secrets.compare_digest(admin_token, settings().demo_admin_token)
+    permission = db.get(Permission, body.permission_id)
+    if not permission:
+        raise HTTPException(404, "Permission not found")
+    if not is_admin and permission.owner != user:
+        raise HTTPException(403, "Permission owner or demo administrator required")
+    product = db.get(Product, permission.product_id)
+    if not product:
+        raise HTTPException(404, "Product not found")
+
+    demo_run = CheckoutDemoRun(
+        permission_id=permission.id,
+        owner=permission.owner,
+        product_id=product.id,
+        trigger_type="manual_admin" if is_admin else "manual_user",
+        status="queued"
+    )
+    db.add(demo_run)
+    db.commit()
+    db.refresh(demo_run)
+
+    from .worker import run_checkout_demo
+    background_tasks.add_task(run_checkout_demo, demo_run.id)
+    return serialize(demo_run)
+
+
+@app.get("/api/demo/checkout-demos")
+def list_checkout_demos(db: Session = Depends(get_db)):
+    runs = list(db.scalars(select(CheckoutDemoRun).order_by(CheckoutDemoRun.created_at.desc()).limit(50)))
+    results = []
+    for r in runs:
+        product = db.get(Product, r.product_id)
+        card = db.get(VirtualCard, r.permission_id)
+        has_screenshot = bool(r.screenshot_path and Path(r.screenshot_path).exists())
+        fields = []
+        try:
+            fields = json.loads(r.fields_completed) if r.fields_completed else []
+        except Exception:
+            pass
+        results.append({
+            **serialize(r),
+            "product_name": product.name if product else "Unknown",
+            "product_variant": product.variant if product else "",
+            "seller": product.seller if product else "",
+            "card_last4": card.last4 if card else None,
+            "has_screenshot": has_screenshot,
+            "fields_completed": fields,
+        })
+    return results
+
+
+@app.get("/api/screenshots/{demo_id}")
+def get_screenshot_file(demo_id: str, db: Session = Depends(get_db)):
+    demo = db.get(CheckoutDemoRun, demo_id)
+    if not demo:
+        raise HTTPException(404, "Evidence run not found")
+    from .worker import get_screenshot_dir
+    p = Path(demo.screenshot_path) if demo.screenshot_path else (get_screenshot_dir() / f"{demo_id}.png")
+    if not p.exists():
+        alt = get_screenshot_dir() / f"{demo_id}.png"
+        if alt.exists():
+            return FileResponse(str(alt), media_type="image/png")
+        raise HTTPException(404, "Screenshot file not found on disk")
+    return FileResponse(str(p), media_type="image/png")
+
+
+@app.get("/screenshots", response_class=HTMLResponse)
+def view_screenshots_page(db: Session = Depends(get_db)):
+    runs = list(db.scalars(select(CheckoutDemoRun).order_by(CheckoutDemoRun.created_at.desc()).limit(30)))
+    cards_html = []
+    for r in runs:
+        product = db.get(Product, r.product_id)
+        card = db.get(VirtualCard, r.permission_id)
+        has_screenshot = bool(r.screenshot_path and Path(r.screenshot_path).exists())
+        fields = []
+        try:
+            fields = json.loads(r.fields_completed) if r.fields_completed else []
+        except Exception:
+            pass
+
+        limit_display = f"${r.nessie_verified_limit_cents / 100:.2f}" if r.nessie_verified_limit_cents else "Unset"
+        card_digits = f"•••• {card.last4}" if (card and card.last4) else "•••• 4242"
+        fields_badges = "".join([f'<span class="badge field">{escape(f)}</span>' for f in fields]) or '<span class="badge muted">none</span>'
+        blocker_html = f'<div class="blocker"><strong>Blocker / Outcome:</strong> {escape(r.blocker_reason)}</div>' if r.blocker_reason else ''
+        screenshot_img = (
+            f'<div class="img-wrap"><a href="/api/screenshots/{r.id}" target="_blank">'
+            f'<img src="/api/screenshots/{r.id}" alt="Masked checkout screenshot" loading="lazy" />'
+            f'</a><div class="zoom-hint">Click image to expand</div></div>'
+        ) if has_screenshot else '<div class="no-img">Screenshot pending or unavailable</div>'
+
+        trigger_badge = '<span class="badge trigger-price">Price Drop Auto-Trigger</span>' if r.trigger_type == 'price_drop' else '<span class="badge trigger-manual">Admin Manual Trigger</span>'
+
+        cards_html.append(f'''
+        <article class="evidence-card">
+          <div class="card-header">
+            <div>
+              <div class="tags">
+                <span class="badge not-submitted">NOT SUBMITTED</span>
+                {trigger_badge}
+                <span class="badge status-{escape(r.status)}">{escape(r.status.upper())}</span>
+              </div>
+              <h2 class="product-title">{escape(product.name if product else "Product")}</h2>
+              <p class="variant">{escape(product.variant if product else "")} · {escape(product.seller if product else "")}</p>
+            </div>
+            <div class="meta-right">
+              <div class="limit-box">
+                <span class="limit-label">Nessie Verified Limit</span>
+                <span class="limit-val">{limit_display}</span>
+              </div>
+              <div class="card-digits">{card_digits}</div>
+              <div class="time">{r.created_at.strftime("%b %d, %Y %H:%M:%S UTC")}</div>
+            </div>
+          </div>
+          <div class="fields-section">
+            <span class="fields-label">Completed Synthetic Fields:</span>
+            <div class="fields-list">{fields_badges}</div>
+          </div>
+          {blocker_html}
+          <div class="card-body">
+            {screenshot_img}
+          </div>
+        </article>
+        ''')
+
+    cards_joined = "".join(cards_html) or '<div class="empty">No checkout demonstrations have run yet. Trigger one in Settings &gt; Demo Controls.</div>'
+
+    html = f'''<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DealOne · Checkout Automation Evidence Gallery</title>
+  <style>
+    :root {{
+      --bg: #090d16;
+      --card-bg: #111827;
+      --border: #1f293d;
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
+      --accent: #8b5cf6;
+      --amber: #f59e0b;
+      --red: #ef4444;
+      --green: #10b981;
+    }}
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 24px;
+      line-height: 1.5;
+    }}
+    .container {{ max-width: 1200px; margin: 0 auto; }}
+    header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 32px;
+    }}
+    h1 {{ font-size: 24px; font-weight: 700; display: flex; align-items: center; gap: 10px; }}
+    .subtitle {{ color: var(--text-muted); font-size: 14px; margin-top: 4px; }}
+    .btn {{
+      display: inline-block;
+      background: #1f2937;
+      color: var(--text);
+      text-decoration: none;
+      padding: 8px 16px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      font-size: 14px;
+      font-weight: 500;
+      transition: background 0.15s;
+    }}
+    .btn:hover {{ background: #374151; }}
+    .evidence-grid {{ display: flex; flex-direction: column; gap: 32px; }}
+    .evidence-card {{
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    }}
+    .card-header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 16px;
+      gap: 16px;
+      flex-wrap: wrap;
+    }}
+    .tags {{ display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }}
+    .badge {{
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }}
+    .badge.not-submitted {{
+      background: rgba(245, 158, 11, 0.15);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.4);
+    }}
+    .badge.trigger-price {{ background: rgba(139, 92, 246, 0.15); color: #c4b5fd; border: 1px solid rgba(139, 92, 246, 0.3); }}
+    .badge.trigger-manual {{ background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.3); }}
+    .badge.status-completed {{ background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }}
+    .badge.status-blocked {{ background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }}
+    .badge.status-running {{ background: rgba(245, 158, 11, 0.15); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.3); }}
+    .badge.field {{ background: #1f293d; color: #e5e7eb; border: 1px solid #374151; font-size: 11px; font-weight: normal; text-transform: none; }}
+    .badge.muted {{ background: #1f2937; color: var(--text-muted); }}
+    .product-title {{ font-size: 18px; font-weight: 600; margin-bottom: 2px; }}
+    .variant {{ font-size: 14px; color: var(--text-muted); }}
+    .meta-right {{ text-align: right; }}
+    .limit-box {{ margin-bottom: 4px; }}
+    .limit-label {{ font-size: 11px; color: var(--text-muted); display: block; }}
+    .limit-val {{ font-size: 18px; font-weight: 700; color: #10b981; }}
+    .card-digits {{ font-family: monospace; font-size: 13px; color: #9ca3af; }}
+    .time {{ font-size: 12px; color: #6b7280; margin-top: 4px; }}
+    .fields-section {{ margin: 12px 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }}
+    .fields-label {{ font-size: 12px; color: var(--text-muted); }}
+    .fields-list {{ display: flex; gap: 6px; flex-wrap: wrap; }}
+    .blocker {{
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #fca5a5;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      margin: 12px 0;
+    }}
+    .card-body {{ margin-top: 16px; border-top: 1px solid var(--border); padding-top: 16px; }}
+    .img-wrap {{
+      position: relative;
+      background: #000;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }}
+    .img-wrap img {{ width: 100%; height: auto; max-height: 900px; object-fit: contain; display: block; image-rendering: -webkit-optimize-contrast; }}
+    .zoom-hint {{
+      position: absolute;
+      bottom: 12px;
+      right: 12px;
+      background: rgba(0,0,0,0.7);
+      color: #e5e7eb;
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 4px;
+      pointer-events: none;
+    }}
+    .no-img {{
+      padding: 40px;
+      text-align: center;
+      color: var(--text-muted);
+      background: #182234;
+      border-radius: 8px;
+    }}
+    .empty {{
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text-muted);
+      font-size: 16px;
+      background: var(--card-bg);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>DealOne · Checkout Automation Evidence Gallery</h1>
+        <p class="subtitle">Autonomous Playwright browser checkout demonstrations with synthetic payment profiles and strict submission prevention.</p>
+      </div>
+      <div>
+        <a href="/" class="btn">← Return to DealOne</a>
+      </div>
+    </header>
+    <main class="evidence-grid">
+      {cards_joined}
+    </main>
+  </div>
+</body>
+</html>'''
+    return html
+

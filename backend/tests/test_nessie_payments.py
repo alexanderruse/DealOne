@@ -293,9 +293,9 @@ def test_ledger_seed_reset_and_credit_controls(client, db, nessie):
 
 def test_nessie_mode_requires_key_and_customer_or_card(monkeypatch):
     monkeypatch.setenv("PAYMENTS_MODE", "nessie")
-    monkeypatch.delenv("NESSIE_API_KEY", raising=False)
-    monkeypatch.delenv("NESSIE_CUSTOMER_ID", raising=False)
-    monkeypatch.delenv("NESSIE_CARD_ACCOUNT_ID", raising=False)
+    monkeypatch.setenv("NESSIE_API_KEY", "")
+    monkeypatch.setenv("NESSIE_CUSTOMER_ID", "")
+    monkeypatch.setenv("NESSIE_CARD_ACCOUNT_ID", "")
     settings.cache_clear()
     with pytest.raises(RuntimeError, match="NESSIE_API_KEY"):
         settings().validate_runtime()

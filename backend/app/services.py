@@ -3,7 +3,8 @@ import secrets
 from .config import settings
 from sqlalchemy import select
 from .models import (Product, Permission, Order, MerchantOrder, PaymentAuthorization,
-                     PriceObservation, Notification, VirtualCard, BankCharge, utcnow)
+                     PriceObservation, Notification, VirtualCard, BankCharge,
+                     ApprovedDomain, AISpendRecord, CheckoutDemoRun, utcnow)
 from . import payments
 from .payments import PaymentDeclined, PaymentUnavailable
 
@@ -322,6 +323,8 @@ def reconcile_order(db, order, merchant):
 
 
 def seed(db):
+    if not db.scalar(select(ApprovedDomain).where(ApprovedDomain.domain == "www.keychron.com")):
+        db.add(ApprovedDomain(id="seed-keychron", domain="www.keychron.com", display_name="Keychron Store"))
     catalog = [
         dict(id="headphones", name="Studio Wireless Headphones", variant="Midnight / New", category="Audio",
              color="violet", price_cents=19900, original_cents=24900,

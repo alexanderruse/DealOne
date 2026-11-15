@@ -55,3 +55,13 @@ class CreditLimitChange(StrictModel):
     available_cents: int = Field(default=0, ge=0, le=1_000_000)
     permission_id: str | None = None
     account_id: str | None = None
+
+
+class ApprovedDomainCreate(StrictModel):
+    domain: str = Field(min_length=3, max_length=120)
+    display_name: str | None = Field(default=None, max_length=100)
+
+
+class CheckoutDemoRequest(StrictModel):
+    permission_id: str = Field(min_length=1, max_length=64)
+
