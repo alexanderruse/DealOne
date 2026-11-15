@@ -55,6 +55,9 @@ type CheckoutDemoRun = {
   id: string;
   permission_id: string;
   owner: string;
+  can_delete?: boolean;
+  cart_total_cents?: number | null;
+  cart_discount_cents?: number | null;
   product_id: string;
   product_name: string;
   product_variant: string;
@@ -147,17 +150,21 @@ function ProductVisual({ product, compact = false }: { product: Product; compact
   ) : <Icon className={compact ? 'product-icon-small' : 'product-object'} size={compact ? 42 : 116} strokeWidth={1.3} />;
 }
 
+function RemoveButton({ label, disabled, onClick }: { label: string; disabled: boolean; onClick: () => void }) {
+  return <button type="button" className="remove-button" title={label} aria-label={label}
+    disabled={disabled} onClick={onClick}><X size={18} aria-hidden="true" /></button>;
+}
+
 function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [watches, setWatches] = useState<Permission[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [notices, setNotices] = useState<Notice[]>([]);
   const refreshPending = useRef(false);
-  const [page, setPage] = useState(window.location.pathname === '/screenshots' ? 'Evidence Gallery' : 'Overview');
+  const [page, setPage] = useState(window.location.pathname === '/screenshots' ? 'Checkout Runs' : 'Overview');
   const [checkoutMode, setCheckoutMode] = useState<'merchant_handoff' | 'sandbox'>('merchant_handoff');
   const [sandboxTotal, setSandboxTotal] = useState('');
   const [bankEvidence, setBankEvidence] = useState<{last4: string; credit_limit_cents: number; available_cents: number; verified_at: string} | null>(null);
-  const [recommendations, setRecommendations] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [grok, setGrok] = useState(false);
   const [payments, setPayments] = useState('simulation');
@@ -177,8 +184,6 @@ function App() {
   const [checkingLink, setCheckingLink] = useState(false);
   const [checkoutRuns, setCheckoutRuns] = useState<CheckoutDemoRun[]>([]);
   const linkRequest = useRef(0);
-  const [catalogTasks, setCatalogTasks] = useState<CatalogTask[]>([]);
-  const [taskIds, setTaskIds] = useState<string[]>([]);
   const [budget, setBudget] = useState('180');
   const [deadline, setDeadline] = useState('7');
   const [parsedExpiration, setParsedExpiration] = useState<string | null>(null);
@@ -190,9 +195,6 @@ function App() {
   const [adminToken, setAdminToken] = useState('');
   const [demoCredit, setDemoCredit] = useState('1');
   const [demoCardPermission, setDemoCardPermission] = useState('');
-  const [chat, setChat] = useState('');
-  const [answer, setAnswer] = useState('');
-  const [toolCalls, setToolCalls] = useState<string[]>([]);
   const nessieCards = watches.filter((w) => w.card?.nessie_account_id);
 
   async function refresh() {
@@ -259,24 +261,6 @@ function App() {
     return () => { active = false; clearTimeout(timer); };
   }, [page]);
 
-  function trackTask(task: CatalogTask) {
-    setTaskIds((ids) => [...new Set([...ids, task.task_id])].slice(-8));
-    setCatalogTasks((tasks) => [...tasks.filter((old) => old.task_id !== task.task_id), task].slice(-8));
-  }
-  useEffect(() => {
-    if (!taskIds.length) return;
-    let active = true;
-    const update = async () => {
-      const tasks = await Promise.all(taskIds.map((id) => api<CatalogTask>(`/catalog/tasks/${id}`)));
-      if (!active) return;
-      setCatalogTasks(tasks);
-      setRecommendations((ids) => [...new Set([...ids, ...tasks.flatMap((task) => task.products.map((product) => product.id))])]);
-    };
-    update().catch(() => {});
-    const timer = setInterval(() => { update().catch(() => {}); }, 4000);
-    return () => {active = false; clearInterval(timer);};
-  }, [taskIds.join(',')]);
-
   async function checkWatchLink() {
     const request = ++linkRequest.current;
     setCheckingLink(true);
@@ -328,6 +312,15 @@ function App() {
       setBusy(false);
     }
   }
+  function deleteRun(demo: CheckoutDemoRun) {
+    if (!window.confirm('Delete this checkout run and its screenshots?')) return;
+    void run(async () => {
+      await api(`/demo/checkout-demos/${demo.id}`, { method: 'DELETE' });
+      setCheckoutDemos((rows) => rows.filter((row) => row.id !== demo.id));
+      setCheckoutRuns((rows) => rows.filter((row) => row.id !== demo.id));
+    });
+  }
+
   function openWatch(p: Product, mode: 'merchant_handoff' | 'sandbox' = 'merchant_handoff') {
     if (!p.can_request) { setError('This variant is sold out or its availability is unverified.'); return; }
     setCheckoutMode(mode);
@@ -380,8 +373,7 @@ function App() {
             ['Overview', LayoutDashboard],
             ['Watchlist', Radar],
             ['Activity', Bell],
-            ['Shopping Assistant', Sparkles],
-            ['Evidence Gallery', Camera],
+            ['Checkout Runs', Camera],
           ].map(([label, Icon]) => {
             const ItemIcon = Icon as typeof Radar;
             return (
@@ -394,7 +386,7 @@ function App() {
                 <ItemIcon size={18} />
                 <span className="nav-text">{String(label)}</span>
                 {label === 'Watchlist' && <span className="nav-count">{activeWatches}</span>}
-                {label === 'Evidence Gallery' && checkoutDemos.length > 0 && <span className="nav-count">{checkoutDemos.length}</span>}
+                {label === 'Checkout Runs' && checkoutDemos.length > 0 && <span className="nav-count">{checkoutDemos.length}</span>}
               </button>
             );
           })}
@@ -435,9 +427,7 @@ function App() {
                     ? 'Your watches and spending limits'
                     : page === 'Activity'
                       ? 'Transactions and alerts'
-                      : page === 'Evidence Gallery'
-                        ? 'Autonomous Checkout Visual Evidence'
-                        : 'DealOne Shopping Assistant powered by Gemini'}
+                      : 'Checkout Runs'}
               </h1>
               <p>
                 {page === 'Overview'
@@ -446,9 +436,7 @@ function App() {
                     ? 'Review active cards, budgets, and purchase modes in one place.'
                     : page === 'Activity'
                       ? 'Follow checkout runs, alerts, and sandbox transactions.'
-                      : page === 'Evidence Gallery'
-                        ? 'Visual proof of Playwright browser checkout runs with masked credentials and strict non-submission safeguards.'
-                        : 'Describe what you want. Gemini can check product links from approved merchants.'}
+                      : 'Review checkout demos captured with synthetic test details.'}
               </p>
             </div>
             <Button onClick={() => { setWatchUrl(''); setLinkTask(null); setLinkError(''); setError(''); setPickerOpen(true); }}>
@@ -622,18 +610,13 @@ function App() {
                                   Reviewed, continue
                                 </Button>
                               )}
-                              {['draft', 'active', 'paused', 'declined'].includes(w.status) && (
-                                <Button
-                                  variant="ghost"
-                                  onClick={() =>
-                                    run(async () => {
-                                      await api(`/permissions/${w.id}/cancel`, { method: 'POST' });
-                                    })
-                                  }
-                                >
-                                  Cancel
-                                </Button>
-                              )}
+                              <RemoveButton label="Remove watch" disabled={busy} onClick={() => {
+                                if (!window.confirm(`Remove the watch for ${product?.name || 'this product'}?`)) return;
+                                void run(async () => {
+                                  await api(`/permissions/${w.id}`, { method: 'DELETE' });
+                                  setWatches((rows) => rows.filter((row) => row.id !== w.id));
+                                });
+                              }} />
                             </div>
                           </div>
                         );
@@ -656,10 +639,11 @@ function App() {
                           {demo.blocker_reason && <p>{demo.blocker_reason}</p>}
                           {(demo.has_screenshot || demo.has_payment_screenshot) && <Button variant="outline" onClick={() => {
                             setCheckoutDemos((runs) => [demo, ...runs.filter((run) => run.id !== demo.id)]);
-                            setPage('Evidence Gallery');
+                            setPage('Checkout Runs');
                             requestAnimationFrame(() => document.getElementById(`evidence-${demo.id}`)?.scrollIntoView());
-                          }}>View evidence</Button>}
+                          }}>View checkout run</Button>}
                         </div>
+                        {demo.can_delete && <RemoveButton label="Delete checkout run" disabled={busy} onClick={() => deleteRun(demo)} />}
                       </div>
                     ))}
                     {notices.length === 0 && checkoutRuns.length === 0 ? (
@@ -678,6 +662,12 @@ function App() {
                             <p>{n.message}</p>
                             <small>{new Date(n.created_at).toLocaleString()}</small>
                           </div>
+                          <RemoveButton label="Dismiss alert" disabled={busy} onClick={() => {
+                            void run(async () => {
+                              await api(`/notifications/${n.id}`, { method: 'DELETE' });
+                              setNotices((rows) => rows.filter((row) => row.id !== n.id));
+                            });
+                          }} />
                         </div>
                       ))
                     )}
@@ -760,93 +750,20 @@ function App() {
                 </div>
               )}
 
-              {page === 'Shopping Assistant' && (
-                <section className="assistant-panel panel">
-                  <div className="assistant-avatar">
-                    <Sparkles size={29} />
-                  </div>
-                  <h2>DealOne Shopping Assistant powered by Gemini</h2>
-                  <p>Paste a product link, ask about price history, or draft watch rules.</p>
-                  <span className={`status ${grok ? 'active' : 'draft'}`}>
-                    {grok ? 'Gemini connected' : 'AI API key not configured'}
-                  </span>
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      run(async () => {
-                        const result = await api<{ message: string; tools: { tool: string; result: unknown }[] }>(
-                          '/assistant',
-                          { method: 'POST', body: JSON.stringify({ text: chat }) },
-                        );
-                        setAnswer(result.message);
-                        setToolCalls(result.tools.map((t) => t.tool));
-                        result.tools.filter((t) => ['discover_products', 'inspect_product'].includes(t.tool)).forEach((call) => {
-                          const task = call.result as CatalogTask;
-                          if (task.task_id) trackTask(task);
-                        });
-                        setRecommendations([...new Set(result.tools.filter((t) => t.tool === 'find_product' && Array.isArray(t.result))
-                          .flatMap((t) => (t.result as Product[]).map((p) => p.id)))]);
-                        const created = result.tools.find((t) => t.tool === 'create_watch_draft' && (t.result as Permission)?.status === 'draft');
-                        if (created) {
-                          const permission = created.result as Permission;
-                          const catalog = await api<Product[]>('/products');
-                          const product = catalog.find((p) => p.id === permission.product_id);
-                          if (product?.can_request) { openWatch(product); setBudget(String(permission.max_total_cents / 100)); setDraft(permission); }
-                        }
-                      });
-                    }}
-                  >
-                    <label htmlFor="chat">Your message</label>
-                    <textarea
-                      id="chat"
-                      value={chat}
-                      onChange={(e) => setChat(e.target.value)}
-                      placeholder="Find silent switches at Epomaker, or track a product link from Keychron…"
-                      required
-                      minLength={5}
-                    />
-                    <Button disabled={busy || !grok}>
-                      {busy ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}
-                      Ask Gemini
-                    </Button>
-                  </form>
-                  {answer && (
-                    <div className="agent-answer">
-                      <strong>Gemini</strong>
-                      <p>{answer}</p>
-                      {toolCalls.length > 0 && <small>Tools used: {toolCalls.join(' → ')}</small>}
-                    </div>
-                  )}
-                  {recommendations.length > 0 && <div className="grok-products" aria-label="Product matches">
-                    {products.filter((p) => recommendations.includes(p.id)).map((p) => <div className="grok-product" key={p.id}>
-                      <ProductVisual key={p.id} product={p} compact />
-                      <div><strong>{p.name}</strong><small>{p.variant} · {p.seller} · {money(p.price_cents)}</small></div>
-                      <Button disabled={!p.can_request} onClick={() => openWatch(p)}>Watch this item</Button>
-                    </div>)}
-                  </div>}
-                  <p className="fineprint">
-                    The assistant can request purchases only under rules you have already activated. Only available products from the approved store can be requested. Product text cannot change purchase rules. Nessie demonstrates sandbox banking. Real merchant orders require merchant checkout.
-                  </p>
-                </section>
-              )}
-
-              {page === 'Evidence Gallery' && (
+              {page === 'Checkout Runs' && (
                 <section className="panel">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '20px' }}>
                     <div>
-                      <h2>Autonomous Checkout Visual Evidence</h2>
-                      <p className="muted">Playwright browser checkout demonstrations with synthetic payment profiles, input masking, and strict submission prevention.</p>
+                      <h2>Run history</h2>
                     </div>
                     <a href="/api/evidence" target="_blank" rel="noopener noreferrer" className="btn" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}>
-                      <ExternalLink size={14} /> Full Evidence Page
+                      <ExternalLink size={14} /> Open print view
                     </a>
                   </div>
                   {checkoutDemos.length === 0 ? (
                     <div className="empty">
                       <Camera size={36} style={{ margin: '0 auto 12px', opacity: 0.5 }} />
                       <h3>No checkout demonstrations run yet</h3>
-                      <p>Select any active watch in Demo Controls to run an automated checkout and capture visual evidence.</p>
-                      <Button variant="outline" onClick={() => setAdminOpen(true)} style={{ marginTop: '12px' }}>Open Demo Controls</Button>
                     </div>
                   ) : (
                     <div className="evidence-gallery">
@@ -859,7 +776,8 @@ function App() {
                                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap' }}>
                                   <span className="badge-not-submitted">NOT SUBMITTED</span>
                                   <span className="status active" style={{ fontSize: '11px', textTransform: 'uppercase' }}>
-                                    {demo.trigger_type === 'price_drop' ? 'Price Drop Auto-Trigger' : 'Admin Manual Trigger'}
+                                    {demo.trigger_type === 'price_drop' ? 'Price Drop Auto-Trigger'
+                                      : demo.trigger_type === 'manual_admin' ? 'Admin Manual Trigger' : 'Manual Trigger'}
                                   </span>
                                   <span className={`status ${demo.status}`} style={{ fontSize: '11px', textTransform: 'uppercase' }}>
                                     {demo.status}
@@ -874,7 +792,13 @@ function App() {
                                 <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '2px' }}>Card: •••• {demo.card_last4 || '4242'}</div>
                                 <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>{new Date(demo.created_at).toLocaleString()}</div>
                               </div>
+                              {demo.can_delete && <RemoveButton label="Delete checkout run" disabled={busy} onClick={() => deleteRun(demo)} />}
                             </div>
+                            {demo.cart_total_cents != null && (
+                              <p className="muted">Verified cart total {money(demo.cart_total_cents)} · {demo.cart_discount_cents == null
+                                ? 'Discount not reported'
+                                : `Discount ${money(demo.cart_discount_cents)}`}</p>
+                            )}
                             <div style={{ margin: '10px 0', fontSize: '13px' }}>
                               <span style={{ fontWeight: 600, color: 'var(--muted)', marginRight: '8px' }}>Completed Fields:</span>
                               {demo.fields_completed && demo.fields_completed.length > 0 ? (
@@ -889,14 +813,14 @@ function App() {
                             </div>
                             {demo.blocker_reason && (
                               <div className="trap-note" style={{ margin: '10px 0', padding: '8px 12px', borderRadius: '6px' }}>
-                                <strong>Blocker / Outcome:</strong> {demo.blocker_reason}
+                                <strong>{demo.status === 'completed' ? 'Preview note:' : 'Blocker / Outcome:'}</strong> {demo.blocker_reason}
                               </div>
                             )}
                             <h4>Checkout overview</h4>
                             <div className="evidence-img-container">
                               {demo.has_screenshot ? (
                                 <a href={`/api/screenshots/${demo.id}`} target="_blank" rel="noopener noreferrer">
-                                  <img src={`/api/screenshots/${demo.id}`} alt="Masked checkout demonstration evidence screenshot" loading="lazy" />
+                                  <img src={`/api/screenshots/${demo.id}`} alt="Synthetic checkout demonstration evidence screenshot" loading="lazy" />
                                 </a>
                               ) : (
                                 <div style={{ padding: '40px', textAlign: 'center', color: '#94a3b8' }}>
@@ -908,7 +832,7 @@ function App() {
                             {demo.has_payment_screenshot ? (
                               <div className="evidence-img-container payment-evidence">
                                 <a href={`/api/screenshots/${demo.id}/payment`} target="_blank" rel="noopener noreferrer">
-                                  <img src={`/api/screenshots/${demo.id}/payment`} alt="Masked payment close-up" loading="lazy" />
+                                  <img src={`/api/screenshots/${demo.id}/payment`} alt="Synthetic payment close-up" loading="lazy" />
                                 </a>
                               </div>
                             ) : <p className="muted">Payment close-up unavailable for this run.</p>}
@@ -982,7 +906,7 @@ function App() {
               {selected.source_url && <a href={selected.source_url} target="_blank" rel="noopener noreferrer">View item <ArrowUpRight size={14} /></a>}
             </div>
             <p className="catalog-disclosure">{checkoutMode === 'sandbox' ? `${payments === 'nessie' ? 'Nessie v2 API' : 'Local simulator (Nessie API not connected)'} demonstration using this real item. The checkout total below is a test scenario, not a merchant offer. No real money moves and no merchant order is placed.` : 'Watch this real item and review its price at the store. Automatic retailer checkout is not connected.'}</p>
-            {selected.supports_checkout_demo !== false && <><label htmlFor="checkout-mode">Experience</label>
+            {!selected.id.startsWith('link-') && selected.supports_checkout_demo !== false && <><label htmlFor="checkout-mode">Experience</label>
             <select id="checkout-mode" value={checkoutMode} onChange={(e) => setCheckoutMode(e.target.value as 'merchant_handoff' | 'sandbox')}>
               <option value="merchant_handoff">Real price watch and merchant checkout</option>
               <option value="sandbox">Nessie banking demonstration · same real item</option>
@@ -1267,7 +1191,7 @@ function App() {
                 <div className="checkout-demo-box">
                   <h3 style={{ fontSize: '15px', fontWeight: 700, margin: 0 }}>Checkout Demonstration Trigger</h3>
                   <p className="fineprint" style={{ margin: '6px 0 10px' }}>
-                    Select an active watch to launch Playwright, fill synthetic customer details + quadrupled Nessie card, and capture visual proof with strict non-submission guarantees.
+                    Choose an active watch to try checkout with synthetic details. Enter the admin token above to capture an over-budget preview.
                   </p>
                   <label htmlFor="demo-watch-select" style={{ fontSize: '12px', fontWeight: 600, color: 'var(--muted)' }}>Select active watch</label>
                   <select
@@ -1280,7 +1204,7 @@ function App() {
                       const prod = w.product || products.find((p) => p.id === w.product_id);
                       return (
                         <option key={w.id} value={w.id}>
-                          {prod?.name || w.product_id} ({w.variant}) · Limit {money(w.max_total_cents)} · {w.card ? `•••• ${w.card.last4}` : 'no card'}
+                          {prod?.name || w.product_id} ({w.variant}) · Limit {money(w.max_total_cents)}
                         </option>
                       );
                     })}
@@ -1291,30 +1215,35 @@ function App() {
                       onClick={() =>
                         run(async () => {
                           setDemoStatusMsg('Launching Playwright browser automation…');
-                          const runResult = await api<CheckoutDemoRun>('/demo/checkout-demo', {
-                            method: 'POST',
-                            headers: { 'x-demo-admin-token': adminToken },
-                            body: JSON.stringify({ permission_id: selectedDemoWatch }),
-                          });
-                          setDemoStatusMsg(`Demo run queued (${runResult.id.slice(0, 8)}). Worker capturing evidence…`);
+                          try {
+                            const runResult = await api<CheckoutDemoRun>('/demo/checkout-demo', {
+                              method: 'POST',
+                              headers: { 'x-demo-admin-token': adminToken.trim() },
+                              body: JSON.stringify({ permission_id: selectedDemoWatch }),
+                            });
+                            const mode = runResult.trigger_type === 'manual_admin' ? 'Admin preview' : 'Manual run';
+                            setDemoStatusMsg(`${mode} queued (${runResult.id.slice(0, 8)}).`);
+                          } catch (cause) {
+                            setDemoStatusMsg((cause as Error).message);
+                          }
                         })
                       }
                     >
                       <Camera size={15} />
-                      Run Checkout Demo &amp; Capture Screenshot
+                      {adminToken.trim() ? 'Run Admin Preview' : 'Run Checkout Demo'}
                     </Button>
                     <Button
                       variant="outline"
                       onClick={() => {
-                        setPage('Evidence Gallery');
+                        setPage('Checkout Runs');
                         setAdminOpen(false);
                       }}
                     >
-                      View Evidence Gallery
+                      View Checkout Runs
                     </Button>
                   </div>
                   {demoStatusMsg && (
-                    <p style={{ fontSize: '12px', color: 'var(--brand-blue)', marginTop: '8px', fontWeight: 600 }}>
+                    <p role="status" style={{ fontSize: '12px', color: 'var(--brand-blue)', marginTop: '8px', fontWeight: 600 }}>
                       {demoStatusMsg}
                     </p>
                   )}

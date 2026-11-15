@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import select
 
 from app import discovery
-from app.catalog import store_product_url, requestable
+from app.merchant_products import store_product_url, requestable
 from app.config import settings
 from app.models import ApprovedDomain, CatalogTask, Product, PriceObservation, Heartbeat, utcnow
 
@@ -20,11 +20,19 @@ def test_arbitrary_hosts_and_paths_are_rejected(url):
 def test_dynamic_product_url_has_no_fixed_model_restriction():
     assert store_product_url("https://www.epomaker.com/products/new-silent-switches?variant=123") == ("epomaker", "new-silent-switches")
     assert store_product_url("https://keychron.com/products/a-new-keycap-set") == ("keychron", "a-new-keycap-set")
+    assert store_product_url("https://www.keychron.com/collections/mice/products/example-mouse?variant=123") == (
+        "keychron", "example-mouse")
+
+
+
+def offline_browser(*args, **kwargs):
+    raise ValueError("No structured browser offers in this fixture")
 
 
 def test_search_cache_queue_and_variant_verification_are_shared(factory, db, monkeypatch):
     monkeypatch.setattr(settings(), "real_catalog_enabled", True)
     monkeypatch.setattr(discovery, "SessionLocal", factory)
+    monkeypatch.setattr(discovery, "scrape_product_browser", offline_browser)
     db.add(ApprovedDomain(domain="www.epomaker.com"))
     db.commit()
     requests = []
@@ -62,6 +70,7 @@ def test_search_cache_queue_and_variant_verification_are_shared(factory, db, mon
 def test_store_cooldowns_are_independent_and_import_is_deduplicated(factory, db, monkeypatch):
     monkeypatch.setattr(settings(), "real_catalog_enabled", True)
     monkeypatch.setattr(discovery, "SessionLocal", factory)
+    monkeypatch.setattr(discovery, "scrape_product_browser", offline_browser)
     db.add(ApprovedDomain(domain="www.epomaker.com"))
     db.commit()
     db.add(Heartbeat(id="catalog:gate", updated_at=utcnow())); db.commit()
@@ -90,7 +99,7 @@ def test_batch_history_contains_observations_only(client, db):
 
 def test_generic_link_requires_an_approved_host_and_a_verified_offer(factory, db, monkeypatch):
     from app import merchant_links
-    from app.catalog import revalidate_product
+    from app.merchant_products import revalidate_product
 
     monkeypatch.setattr(settings(), "real_catalog_enabled", True)
     monkeypatch.setattr(discovery, "SessionLocal", factory)

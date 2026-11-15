@@ -3,10 +3,15 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 
-from app.catalog import SOURCES, image_url, parse_product
+from app.merchant_products import image_url, parse_product
 from app.models import Product, Permission, Order, Notification, utcnow
 from app import worker
 
+
+SOURCES = (
+    ("keychron-c3-pro-qmk-via-wired-mechanical-keyboard", "Keyboard", "keyboard"),
+    ("keychron-m3-wireless-mouse", "Mouse", "mouse"),
+)
 
 def merchant_record():
     return parse_product({"product": {"title": "Keychron M3 Wireless Mouse", "variants": [
@@ -136,7 +141,7 @@ def test_disabling_polling_never_reintroduces_fictional_products(client, db, mon
 @pytest.mark.parametrize("delay", ["3", "120"])
 def test_merchant_rate_limit_defers_to_shared_queue(delay):
     import httpx
-    from app import catalog
+    from app import merchant_products as catalog
     calls=[]
     def transport(request):
         calls.append(str(request.url))

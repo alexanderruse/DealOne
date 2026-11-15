@@ -1,5 +1,6 @@
 """Deterministic acceptance fixtures for real SKUs, restricted to APP_ENV=test."""
-from app.catalog import parse_product, SOURCES
+from app.merchant_products import parse_product
+from tests.test_merchant_catalog import SOURCES
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Product

@@ -8,9 +8,9 @@ import socket
 import ssl
 import time
 from decimal import Decimal, InvalidOperation
-from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
+from playwright.sync_api import Error as PlaywrightError, sync_playwright
 from sqlalchemy import select
 
 from .models import ApprovedDomain, utcnow
@@ -51,6 +51,19 @@ def is_approved(db, value):
 
 def link_id(url):
     return "link-" + hashlib.sha256(url.encode()).hexdigest()[:59]
+
+
+def checkout_product_handle(url):
+    try:
+        path = urlsplit(https_url(url)).path
+    except (TypeError, ValueError):
+        return None
+    match = re.fullmatch(r"/(?:collections/[a-z0-9][a-z0-9-]*/)?products/([a-z0-9][a-z0-9-]{0,179})/?", path)
+    return match.group(1) if match else None
+
+
+def supports_checkout_demo(product):
+    return product.source_kind == "merchant" and bool(checkout_product_handle(product.source_url))
 
 
 class PublicConnection(http.client.HTTPSConnection):
@@ -102,31 +115,29 @@ def fetch_page(url):
     raise ValueError("Too many merchant redirects")
 
 
-class ProductPage(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.section = None
-        self.documents = []
-        self.text = []
-
-    def handle_starttag(self, tag, attrs):
-        if tag in ("script", "style"):
-            self.section = tag
-            if tag == "script" and dict(attrs).get("type") == "application/ld+json":
-                self.section = "json"
-
-    def handle_endtag(self, tag):
-        if tag in ("script", "style"):
-            self.section = None
-
-    def handle_data(self, data):
-        if self.section == "json":
+def read_product_page(url):
+    # Fetch through the public-address guard before giving merchant content to Chromium.
+    html = fetch_page(url)
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
             try:
-                self.documents.append(json.loads(data))
-            except ValueError:
-                pass
-        elif self.section is None and data.strip():
-            self.text.append(" ".join(data.split()))
+                context = browser.new_context(java_script_enabled=False, service_workers="block")
+                context.route("**/*", lambda route: route.abort())
+                page = context.new_page()
+                page.set_content(html, wait_until="domcontentloaded", timeout=12_000)
+                return page.evaluate("""() => {
+                    const documents = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
+                        .flatMap(node => {
+                            try { return [JSON.parse(node.textContent)]; }
+                            catch { return []; }
+                        });
+                    return {documents, excerpt: document.body?.innerText?.slice(0, 9000) || ""};
+                }""")
+            finally:
+                browser.close()
+    except PlaywrightError as exc:
+        raise ValueError("Merchant page could not be read in Chromium") from exc
 
 
 def products_in(node):
@@ -193,9 +204,8 @@ def gemini_offer(excerpt):
 
 
 def verify_link(url):
-    page = ProductPage()
-    page.feed(fetch_page(url))
-    products = list(products_in(page.documents))
+    page = read_product_page(url)
+    products = list(products_in(page["documents"]))
     offers = set()
     for product in products:
         rows = product.get("offers", [])
@@ -207,7 +217,7 @@ def verify_link(url):
                     offers.add(values)
     offer = next(iter(offers)) if len(products) == len(offers) == 1 else None
     if offer is None and len(products) < 2 and len(offers) < 2:
-        offer = gemini_offer(" ".join(page.text)[:9000])
+        offer = gemini_offer(page["excerpt"])
     if offer is None:
         return None
     name, cents, stock = offer

@@ -70,18 +70,11 @@ test('Gemini rules update the real product visual and budget',async({page})=>{
   await expect(page.locator('.selected-product')).toContainText('Keychron');
 });
 
-test('assistant matches are actionable real products',async({page})=>{
-  await page.route('**/api/session',route=>route.fulfill({json:{grok_configured:true,payments:'simulation'}}));
-  await page.route('**/api/assistant',route=>route.fulfill({json:{message:'An available Keychron mouse.',
-    tools:[{tool:'find_product',result:[{id:mouseId}]}]}}));
+test('navigation includes Checkout Runs and omits Shopping Assistant', async ({page}) => {
   await page.goto('/');
-  await page.getByRole('button',{name:'Shopping Assistant',exact:true}).click();
-  await page.getByLabel('Your message').fill('Find an available Keychron mouse');
-  await page.getByRole('button',{name:'Ask Gemini',exact:true}).click();
-  const matches=page.getByLabel('Product matches');
-  await expect(matches).toContainText('Keychron M3');
-  await matches.getByRole('button',{name:'Watch this item'}).click();
-  await expect(page.getByRole('dialog')).toContainText('Keychron M3');
+  await expect(page.getByRole('button', {name: 'Shopping Assistant', exact: true})).toHaveCount(0);
+  await page.getByRole('button', {name: 'Checkout Runs', exact: true}).click();
+  await expect(page.getByRole('heading', {name: 'Checkout Runs', exact: true})).toBeVisible();
 });
 
 test('start watch explains unavailable stock',async({page})=>{
@@ -90,20 +83,6 @@ test('start watch explains unavailable stock',async({page})=>{
   await checkLink(page, mouseUrl, true);
   await expect(page.getByRole('dialog')).toContainText('Sold out');
   await expect(page.getByRole('button',{name:'Watch this item'})).toBeDisabled();
-});
-
-test('Gemini results keep sold-out variants visible and disabled',async({page})=>{
-  await page.route('**/api/session',route=>route.fulfill({json:{grok_configured:true,payments:'simulation'}}));
-  await page.route('**/api/assistant',route=>route.fulfill({json:{message:'Available and sold-out variants.',
-    tools:[{tool:'find_product',result:[{id:mouseId},{id:'keychron-40574854037593'}]}]}}));
-  await page.goto('/');
-  await page.getByRole('button',{name:'Shopping Assistant',exact:true}).click();
-  await page.getByLabel('Your message').fill('Show all Keychron stock states');
-  await page.getByRole('button',{name:'Ask Gemini',exact:true}).click();
-  const matches=page.getByLabel('Product matches');
-  await expect(matches.locator('.grok-product')).toHaveCount(2);
-  await expect(matches.locator('.grok-product').filter({hasText:'C3 Pro'}).getByRole('button')).toBeDisabled();
-  await expect(matches.locator('.grok-product').filter({hasText:'M3'}).getByRole('button')).toBeEnabled();
 });
 
 test('mobile and desktop overview fit without browser errors',async({page})=>{

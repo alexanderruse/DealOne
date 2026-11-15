@@ -77,7 +77,7 @@ def deploy(endpoint, tag):
                     "template": {"spec": {"restartPolicy": "Never", "automountServiceAccountToken": False,
                                            "imagePullSecrets": [{"name": "vultr-cr-credentials"}],
                                            "containers": [{"name": "migrate", "image": image("api"),
-                                                           "command": ["sh", "-c", "alembic upgrade head && python -m app.seed"],
+                                                           "command": ["sh", "-c", "alembic upgrade head"],
                                                            "envFrom": [{"configMapRef": {"name": "dealone-config"}},
                                                                        {"secretRef": {"name": "dealone-runtime"}}]}]}}}}
     # Re-running the same revision can retry a failed migration job safely.

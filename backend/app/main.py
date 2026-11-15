@@ -19,7 +19,7 @@ from .models import (Product, Permission, Order, PriceObservation, Notification,
 from . import payments
 from .merchant_links import approved_hosts, https_url, is_approved, normalize_host
 from .payments import PaymentUnavailable
-from .schemas import DiscoveryRequest, InspectRequest, HistoryRequest
+from .schemas import InspectRequest, HistoryRequest
 from .schemas import (Rules, ActivateRequest, ParseRequest, AssistantRequest, PriceChange,
                       CreditLimitChange, PermissionReference, ApprovedDomainCreate, CheckoutDemoRequest)
 from .services import (serialize, product_view, permission_view, issue_card, void_card, prepare_order,
@@ -186,7 +186,7 @@ def payment_ledger(user: str = Depends(owner), db: Session = Depends(get_db)):
 
 @app.get("/api/products")
 def products(db: Session = Depends(get_db)):
-    from .catalog import public_products
+    from .merchant_products import public_products
     allowed = approved_hosts(db)
     return [product_view(p) for p in public_products(db)
             if normalize_host(urlsplit(p.source_url).hostname) in allowed][:250]
@@ -226,7 +226,7 @@ def parse(body: ParseRequest, user: str = Depends(owner), db: Session = Depends(
 def assistant(body: AssistantRequest, user: str = Depends(owner), db: Session = Depends(get_db)):
     from .ai import assistant
     try:
-        inventory = {"status": "cached", "message": "Grok can request approved-store discovery; merchant cooldowns are shared"}
+        inventory = {"status": "cached", "message": "Product links are verified on request"}
         result = assistant(body.text, db, user)
         tools = ", ".join(call["tool"] for call in result["tools"]) or "answered without tools"
         db.add(Notification(owner=user, event_key=f"assistant:{uuid4()}", message=f"Assistant command: {body.text[:160]} · {tools}. Inventory: {inventory['status']}."))
@@ -237,32 +237,6 @@ def assistant(body: AssistantRequest, user: str = Depends(owner), db: Session = 
     except Exception:
         db.rollback()
         raise HTTPException(502, "DealOne Shopping Assistant request failed. Your purchase rules remain enforced.")
-
-
-@app.post("/api/catalog/refresh")
-def refresh_merchant_catalog(user: str = Depends(owner), db: Session = Depends(get_db)):
-    from .catalog import refresh_catalog, public_products
-    from .discovery import enqueue, product_location
-    sources = list(dict.fromkeys(product_location(p) for p in reversed(public_products(db)) if not p.id.startswith("link-") and is_approved(db, p.source_url)))[:2]
-    for store, handle in sources:
-        enqueue(db, store, "product", handle, priority=80)
-    db.commit()
-    return refresh_catalog()
-
-
-@app.get("/api/catalog/stores")
-def approved_stores(db: Session = Depends(get_db)):
-    from .catalog import STORES
-    return [{"id": key, "name": value["name"], "domain": value["host"]} for key, value in STORES.items() if normalize_host(value["host"]) in approved_hosts(db)]
-
-
-@app.post("/api/catalog/discover")
-def discover_products(body: DiscoveryRequest, user: str = Depends(owner), db: Session = Depends(get_db)):
-    from .discovery import discover
-    try:
-        return discover(db, body.store, body.query)
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from None
 
 
 @app.post("/api/catalog/inspect")
@@ -289,7 +263,7 @@ def create_permission(body: Rules, user: str = Depends(owner), db: Session = Dep
     product = db.get(Product, body.product_id)
     if not product:
         raise HTTPException(404, "Product not found")
-    from .catalog import revalidate_product
+    from .merchant_products import revalidate_product
     try:
         revalidate_product(db, product)
     except ValueError as exc:
@@ -309,7 +283,7 @@ def create_permission(body: Rules, user: str = Depends(owner), db: Session = Dep
 def permissions(user: str = Depends(owner), db: Session = Depends(get_db)):
     rows = db.execute(select(Permission, VirtualCard, Product).outerjoin(
         VirtualCard, VirtualCard.permission_id == Permission.id).outerjoin(
-        Product, Product.id == Permission.product_id).where(Permission.owner == user)
+        Product, Product.id == Permission.product_id).where(Permission.owner == user, Permission.removed_at.is_(None))
         .order_by(Permission.created_at.desc()))
     results = []
     for permission, card, product in rows:
@@ -328,7 +302,7 @@ def activate(permission_id: str, body: ActivateRequest | None = None, user: str 
         raise HTTPException(404, "Permission not found")
     if permission.status != "draft" or permission.expires_at <= utcnow():
         raise HTTPException(409, "Only an unexpired draft can be activated")
-    from .catalog import revalidate_product
+    from .merchant_products import revalidate_product
     product = db.get(Product, permission.product_id)
     try:
         revalidate_product(db, product)
@@ -365,6 +339,24 @@ def cancel(permission_id: str, user: str = Depends(owner), db: Session = Depends
     void_card(db, permission.id)
     db.commit()
     return permission_view(permission, db.get(VirtualCard, permission.id))
+
+
+@app.delete("/api/permissions/{permission_id}")
+def remove_watch(permission_id: str, user: str = Depends(owner), db: Session = Depends(get_db)):
+    permission = db.scalar(select(Permission).where(
+        Permission.id == permission_id, Permission.owner == user).with_for_update())
+    if not permission:
+        raise HTTPException(404, "Watch not found")
+    pending_order = db.scalar(select(Order.id).where(
+        Order.permission_id == permission_id, Order.status.in_(("pending", "submitting", "uncertain"))).limit(1))
+    if pending_order:
+        raise HTTPException(409, "Resolve the pending purchase in Activity before removing this watch.")
+    if permission.status != "purchased":
+        permission.status = "cancelled"
+        void_card(db, permission.id)
+    permission.removed_at = utcnow()
+    db.commit()
+    return {"removed": True}
 
 
 @app.post("/api/purchases", status_code=202)
@@ -405,7 +397,19 @@ def resume(permission_id: str, user: str = Depends(owner), db: Session = Depends
 
 @app.get("/api/notifications")
 def notifications(user: str = Depends(owner), db: Session = Depends(get_db)):
-    return [serialize(n) for n in db.scalars(select(Notification).where(Notification.owner == user).order_by(Notification.created_at.desc()).limit(50))]
+    return [serialize(n) for n in db.scalars(select(Notification).where(
+        Notification.owner == user, Notification.dismissed_at.is_(None))
+        .order_by(Notification.created_at.desc()).limit(50))]
+
+
+@app.delete("/api/notifications/{notification_id}")
+def dismiss_notification(notification_id: str, user: str = Depends(owner), db: Session = Depends(get_db)):
+    notification = db.scalar(select(Notification).where(Notification.id == notification_id, Notification.owner == user))
+    if not notification:
+        raise HTTPException(404, "Alert not found")
+    notification.dismissed_at = utcnow()
+    db.commit()
+    return {"dismissed": True}
 
 
 @app.post("/api/demo/products/{product_id}/price", dependencies=[Depends(admin)])
@@ -562,9 +566,10 @@ def delete_approved_domain(domain_id: str, db: Session = Depends(get_db)):
 @app.post("/api/demo/checkout-demo")
 def trigger_checkout_demo(body: CheckoutDemoRequest, background_tasks: BackgroundTasks,
                           request: Request, user: str = Depends(owner), db: Session = Depends(get_db)):
-    # Check if admin token is present or caller is owner
     admin_token = request.headers.get("x-demo-admin-token", "")
-    is_admin = secrets.compare_digest(admin_token, settings().demo_admin_token)
+    is_admin = bool(admin_token) and secrets.compare_digest(admin_token, settings().demo_admin_token)
+    if admin_token and not is_admin:
+        raise HTTPException(403, "Demo admin token is incorrect. Enter the token for an admin preview, or clear it for a regular run.")
     permission = db.get(Permission, body.permission_id)
     if not permission:
         raise HTTPException(404, "Permission not found")
@@ -574,8 +579,9 @@ def trigger_checkout_demo(body: CheckoutDemoRequest, background_tasks: Backgroun
     if not product:
         raise HTTPException(404, "Product not found")
 
-    if product.id.startswith("link-") or not is_approved(db, product.source_url):
-        raise HTTPException(409, "Checkout demos require a supported and approved merchant")
+    from .merchant_links import supports_checkout_demo
+    if not supports_checkout_demo(product) or not is_approved(db, product.source_url):
+        raise HTTPException(409, "Checkout demos require an approved merchant product link")
 
     demo_run = CheckoutDemoRun(
         permission_id=permission.id,
@@ -595,18 +601,33 @@ def trigger_checkout_demo(body: CheckoutDemoRequest, background_tasks: Backgroun
 
 @app.get("/api/activity/checkout-runs")
 def activity_checkout_runs(user: str = Depends(owner), db: Session = Depends(get_db)):
-    return checkout_run_views(db, user)
+    return checkout_run_views(db, user, owned_only=True)
 
 
 @app.get("/api/demo/checkout-demos")
-def list_checkout_demos(db: Session = Depends(get_db)):
-    return checkout_run_views(db)
+def list_checkout_demos(user: str = Depends(owner), db: Session = Depends(get_db)):
+    return checkout_run_views(db, user)
 
 
-def checkout_run_views(db, user=None):
+@app.delete("/api/demo/checkout-demos/{demo_id}")
+def delete_checkout_demo(demo_id: str, user: str = Depends(owner), db: Session = Depends(get_db)):
+    demo = db.scalar(select(CheckoutDemoRun).where(
+        CheckoutDemoRun.id == demo_id, CheckoutDemoRun.owner == user).with_for_update())
+    if not demo:
+        raise HTTPException(404, "Checkout run not found")
+    if demo.status in ("queued", "running"):
+        raise HTTPException(409, "Wait for the checkout run to finish before deleting it.")
+    from .worker import get_screenshot_dir
+    (get_screenshot_dir() / f"{demo.id}.png").unlink(missing_ok=True)
+    db.delete(demo)
+    db.commit()
+    return {"deleted": True}
+
+
+def checkout_run_views(db, user, *, owned_only=False):
     query = select(CheckoutDemoRun, CheckoutDemoRun.screenshot_png.is_not(None),
                    CheckoutDemoRun.payment_screenshot_png.is_not(None))
-    if user is not None:
+    if owned_only:
         query = query.where(CheckoutDemoRun.owner == user)
     else:
         query = query.where(CheckoutDemoRun.status.not_in(("queued", "running")))
@@ -629,6 +650,7 @@ def checkout_run_views(db, user=None):
             "card_last4": card.last4 if card else None,
             "has_screenshot": has_screenshot,
             "has_payment_screenshot": stored_payment,
+            "can_delete": r.owner == user and r.status not in ("queued", "running"),
             "fields_completed": fields,
         })
     return results
@@ -683,16 +705,19 @@ def view_screenshots_page(db: Session = Depends(get_db)):
         blocker_html = f'<div class="blocker"><strong>Blocker / Outcome:</strong> {escape(r.blocker_reason)}</div>' if r.blocker_reason else ''
         screenshot_img = (
             f'<div class="img-wrap"><a href="/api/screenshots/{r.id}" target="_blank">'
-            f'<img src="/api/screenshots/{r.id}" alt="Masked checkout screenshot" loading="lazy" />'
+            f'<img src="/api/screenshots/{r.id}" alt="Synthetic checkout screenshot" loading="lazy" />'
             f'</a><div class="zoom-hint">Click image to expand</div></div>'
         ) if has_screenshot else '<div class="no-img">Screenshot pending or unavailable</div>'
 
         payment_path = f"/api/screenshots/{r.id}/payment"
         payment_img = (f'<div class="img-wrap"><a href="{payment_path}" target="_blank" rel="noopener">'
-                       f'<img src="{payment_path}" alt="Masked payment close-up" loading="lazy" />'
+                       f'<img src="{payment_path}" alt="Synthetic payment close-up" loading="lazy" />'
                        '</a></div>') if stored_payment else '<p>Payment close-up unavailable for this run.</p>'
 
-        trigger_badge = '<span class="badge trigger-price">Price Drop Auto-Trigger</span>' if r.trigger_type == 'price_drop' else '<span class="badge trigger-manual">Admin Manual Trigger</span>'
+        trigger_label = {"price_drop": "Price Drop Auto-Trigger", "manual_admin": "Admin Manual Trigger"}.get(
+            r.trigger_type, "Manual Trigger")
+        trigger_class = "trigger-price" if r.trigger_type == "price_drop" else "trigger-manual"
+        trigger_badge = f'<span class="badge {trigger_class}">{trigger_label}</span>'
 
         cards_html.append(f'''
         <article class="evidence-card">
@@ -736,7 +761,7 @@ def view_screenshots_page(db: Session = Depends(get_db)):
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DealOne · Checkout Automation Evidence Gallery</title>
+  <title>DealOne · Checkout Runs</title>
   <style>
     :root {{
       --bg: #090d16;
@@ -881,7 +906,7 @@ def view_screenshots_page(db: Session = Depends(get_db)):
   <div class="container">
     <header>
       <div>
-        <h1>DealOne · Checkout Automation Evidence Gallery</h1>
+        <h1>DealOne · Checkout Runs</h1>
         <p class="subtitle">Autonomous Playwright browser checkout demonstrations with synthetic payment profiles and strict submission prevention.</p>
       </div>
       <div>

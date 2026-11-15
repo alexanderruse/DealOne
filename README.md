@@ -17,7 +17,7 @@ Active watches get refresh priority (target 130 seconds when capacity permits). 
 
 Price history contains only actual DealOne observations for each merchant variant. It begins when the product is imported; there is no invented earlier history. Inline charts use actual timestamps and show observation counts, low/high prices and dates. Gaps over 30 minutes remain unconnected. Missing, invalid, or unavailable history hides the chart; unchanged prices show a compact notice. One batched request loads visible products separately from the catalog, with a three-second timeout and 30-second refresh. New merchant observations also refresh history. Prices are USD item prices before merchant tax and shipping; sandbox totals never overwrite merchant prices or inventory. This feature uses the existing history endpoint and requires no database migration.
 
-Grok uses `discover_products`, `inspect_product`, `find_product`, `get_price_history`, `get_activity`, and reviewed purchase tools. Commands update the live dashboard and leave an Activity entry; a search never creates a bank charge. Grok can draft rules with an explicit budget, but the user must activate them. Playwright remains confined to the controlled sandbox checkout. The interface uses permanent red/black theme tokens with dark text, larger type, and mobile layout checks.
+The assistant uses `inspect_product`, `get_price_history`, `get_activity`, and reviewed purchase tools. Commands update the live dashboard and leave an Activity entry; a search never creates a bank charge. Grok can draft rules with an explicit budget, but the user must activate them. Playwright verifies product links and runs the controlled sandbox checkout demo. The interface uses permanent red/black theme tokens with dark text, larger type, and mobile layout checks.
 
 ## Run locally
 
@@ -39,11 +39,11 @@ docker compose up -d db
 backend/.venv/bin/python scripts/local_checkout_demo.py --analyze
 ```
 
-The demo fills synthetic checkout details and ends before order submission. It saves masked screenshots, frame dimensions, input lengths, and the outcome under the ignored `infra/generated/local-checkout/` directory. Each run uses an isolated local database schema and removes it afterward. `--analyze` reviews the masked captures using the OpenRouter key and model in `.env`. Add `--headed` to watch the browser or `--url` to reproduce another product variant.
+The demo fills synthetic checkout details and ends before order submission. It saves unmasked synthetic screenshots, frame dimensions, input lengths, and the outcome under the ignored `infra/generated/local-checkout/` directory. Each run uses an isolated local database schema and removes it afterward. `--analyze` reviews the synthetic checkout captures using the OpenRouter key and model in `.env`. Add `--headed` to watch the browser or `--url` to reproduce another product variant.
 
 ## Demonstration walkthrough
 
-1. Search for a product at an approved store or paste its product URL. Wait for exact-variant verification; sold-out and unverified variants cannot be selected.
+1. Paste a product URL from an approved store. Wait for exact-variant verification; sold-out and unverified variants cannot be selected.
 2. Click **Try Nessie sandbox**, or choose **Nessie banking demonstration** in the watch dialog.
 3. Set an all-in spending maximum and a lower sandbox test total. Review both, along with the exact variant and expiration.
 4. Keep **Ask me first**, the default, and activate. A dedicated card is limited to this permission's maximum.

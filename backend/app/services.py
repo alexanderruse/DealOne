@@ -30,9 +30,10 @@ def serialize(record):
 
 
 def product_view(product):
-    from .catalog import requestable
+    from .merchant_products import requestable
+    from .merchant_links import supports_checkout_demo
     return {**serialize(product), "total_cents": total(product),
-            "can_request": requestable(product), "supports_checkout_demo": not product.id.startswith("link-"), "merchant_order_placed": False,
+            "can_request": requestable(product), "supports_checkout_demo": supports_checkout_demo(product), "merchant_order_placed": False,
             "contains_hidden_instructions": bool(product.description and HIDDEN_INSTRUCTION_BAIT[:40] in product.description)}
 
 
@@ -96,7 +97,7 @@ def checkout_total(permission, product):
 
 
 def validate_purchase(permission, product):
-    from .catalog import ensure_requestable
+    from .merchant_products import ensure_requestable
     if product.source_kind == "merchant":
         try:
             ensure_requestable(product)
@@ -156,7 +157,7 @@ def prepare_order(db, permission_id, owner=None):
     if existing:
         return existing
     product = db.get(Product, permission.product_id)
-    from .catalog import revalidate_product
+    from .merchant_products import revalidate_product
     try:
         revalidate_product(db, product)
     except ValueError as exc:
@@ -192,7 +193,7 @@ def complete_order(db, order_id):
     if order.status not in ("pending", "submitting", "uncertain"):
         raise PurchaseRejected("Order is not eligible for submission")
     product = db.scalar(select(Product).where(Product.id == permission.product_id).with_for_update())
-    from .catalog import revalidate_product
+    from .merchant_products import revalidate_product
     try:
         revalidate_product(db, product)
     except ValueError as exc:

@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.ai import execute_tool
 from app.models import Notification, Order, Permission, Product, VirtualCard, utcnow
-from app.schemas import PermissionReference, SearchRequest
+from app.schemas import PermissionReference
 from app.services import (HIDDEN_INSTRUCTION_BAIT, PurchaseRejected, complete_order, prepare_order,
                           product_view)
 from app.worker import scan
@@ -96,8 +96,27 @@ def test_hidden_instruction_product_is_seeded_as_data(db):
     view = product_view(product)
     assert view["contains_hidden_instructions"] is True
     assert "Mechanical Keyboard" in view["description"]
-    found = execute_tool("find_product", SearchRequest(query="USB"), db, "owner")
-    assert not any(item["id"] == "usb-hub" for item in found)  # Fictional fixtures never reach Grok.
+    from app.merchant_products import public_products
+    assert not any(item.id == "usb-hub" for item in public_products(db))
     # Product text must never become an executable purchase path on its own.
     with pytest.raises(PurchaseRejected, match="not found"):
         execute_tool("request_purchase", PermissionReference(permission_id="not-a-real-permission"), db, "owner")
+
+
+def test_removing_active_watch_voids_card_and_archives_permission(client, db):
+    from tests.test_merchant_catalog import merchant_record
+
+    record = merchant_record()
+    db.add(Product(**record))
+    db.commit()
+    watch = client.post("/api/permissions", json={
+        "product_id": record["id"], "max_total_cents": 6000,
+        "expires_at": (utcnow() + timedelta(days=1)).isoformat(),
+    }).json()
+    path = f"/api/permissions/{watch['id']}"
+    assert client.post(path + "/activate", json={"checkout_mode": "sandbox", "sandbox_total_cents": 5000}).status_code == 200
+    assert client.delete(path).status_code == 200
+    assert client.get("/api/permissions").json() == []
+    db.expire_all()
+    assert db.get(Permission, watch["id"]).status == "cancelled"
+    assert db.get(VirtualCard, watch["id"]).status == "voided"
