@@ -6,7 +6,8 @@ test('only real products appear and sold-out variants cannot be requested', asyn
   await expect(page.locator('.product-card')).toHaveCount(2);
   await expect(page.getByText('DealOne Demo Store', {exact:false})).toHaveCount(0);
   const soldOut=page.locator('.product-card').filter({hasText:'Keychron C3 Pro'});
-  await expect(soldOut).toContainText('Sold out');
+  await expect(page.getByRole('button', {name: 'Refresh merchant inventory'})).toHaveCount(0);
+  await expect(page.locator('.availability')).toHaveCount(0);
   await expect(soldOut.getByRole('button',{name:'Watch this item'})).toBeDisabled();
   const response=await page.request.post('/api/permissions',{data:{product_id:'keychron-40574854037593',
     max_total_cents:4000,expires_at:new Date(Date.now()+86400000).toISOString()}});
@@ -79,9 +80,9 @@ test('start watch explains unavailable stock and preview badge is removed',async
   await expect(page.getByText('HACKATHON PREVIEW',{exact:false})).toHaveCount(0);
   await page.getByRole('button',{name:'Start a watch',exact:true}).click();
   const picker=page.getByRole('dialog');
-  await expect(picker).toContainText('No recently verified, available variants');
+  await expect(picker).toContainText('No recently verified items');
   await expect(picker.getByRole('button',{name:'Watch this item'}).first()).toBeDisabled();
-  await expect(picker.getByRole('button',{name:'Check merchant availability'})).toBeEnabled();
+  await expect(picker.getByRole('button',{name:'Check merchant availability'})).toHaveCount(0);
 });
 
 test('Gemini results keep sold-out variants visible and disabled',async({page})=>{
@@ -129,7 +130,7 @@ test('store discovery displays real listing previews and queued variant checks',
   await expect(preview).toContainText('EPOMAKER AegisSil Keycaps Set');
   await expect(preview).toContainText('From $15.00');
   await expect(preview.getByRole('button',{name:'Watch this item'})).toHaveCount(0);
-  await preview.getByRole('button',{name:'Check variants & stock'}).click();
+  await preview.getByRole('button',{name:'Check variants'}).click();
   await expect(page.getByLabel('Live merchant discovery')).toContainText('Queued for merchant verification');
 });
 

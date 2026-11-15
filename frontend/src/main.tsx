@@ -86,7 +86,6 @@ type Product = {
   color: string;
   source_kind: 'demo' | 'merchant';
   can_request: boolean;
-  stock_status: 'in_stock' | 'sold_out' | 'unknown';
   source_url: string | null;
   image_url: string | null;
   icon: string;
@@ -178,7 +177,6 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Product | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [inventoryStatus, setInventoryStatus] = useState('');
   const [discoveryQuery, setDiscoveryQuery] = useState('');
   const [discoveryStore, setDiscoveryStore] = useState('keychron');
   const [catalogTasks, setCatalogTasks] = useState<CatalogTask[]>([]);
@@ -244,7 +242,6 @@ function App() {
   function trackTask(task: CatalogTask) {
     setTaskIds((ids) => [...new Set([...ids, task.task_id])].slice(-8));
     setCatalogTasks((tasks) => [...tasks.filter((old) => old.task_id !== task.task_id), task].slice(-8));
-    setInventoryStatus(task.message);
   }
   useEffect(() => {
     if (!taskIds.length) return;
@@ -267,11 +264,11 @@ function App() {
     const listings = [...new Map(catalogTasks.flatMap((task) => task.listings).map((listing) => [listing.source_url, listing])).values()];
     return <section className="discovery-results" aria-label="Live merchant discovery">
       {catalogTasks.length > 0 && <div className="discovery-progress" role="status">{catalogTasks.slice(-2).map((task) => <p key={task.task_id}><strong>{task.store} · {task.status}</strong> — {task.message}{task.checked_at ? ` Observed ${new Date(task.checked_at).toLocaleTimeString()}.` : ''}{task.status === 'queued' && task.next_check_at ? ` Next eligible check: ${new Date(task.next_check_at).toLocaleTimeString()}.` : ''}</p>)}</div>}
-      {listings.length > 0 && <><h3>Found at the store</h3><p>Real listing previews. Check variants to verify stock, exact price, and start a watch.</p><div className="discovery-grid">{listings.map((listing) => <article className="discovery-card" key={listing.source_url}>
+      {listings.length > 0 && <><h3>Found at the store</h3><p>Real listing previews. Check variants and exact prices to start a watch.</p><div className="discovery-grid">{listings.map((listing) => <article className="discovery-card" key={listing.source_url}>
         {listing.image_url ? <img src={listing.image_url} alt={listing.name} loading="lazy" /> : <Package size={48} />}
         <div><small>{listing.seller}</small><h4>{listing.name}</h4><p>From {money(listing.price_from_cents)} USD · before tax & shipping</p></div>
         <a href={listing.source_url} target="_blank" rel="noopener noreferrer">View merchant listing ↗</a>
-        <Button variant="outline" disabled={busy} onClick={() => run(() => inspectListing(listing.source_url))}>Check variants & stock</Button>
+        <Button variant="outline" disabled={busy} onClick={() => run(() => inspectListing(listing.source_url))}>Check variants</Button>
       </article>)}</div></>}
     </section>;
   }
@@ -664,13 +661,8 @@ function App() {
                     <div><label htmlFor="discover-query">Search the store or paste a product link</label><input id="discover-query" value={discoveryQuery} onChange={(event) => setDiscoveryQuery(event.target.value)} placeholder="Keycaps, silent switches, a model name, or a product URL…" required minLength={2} maxLength={500} /></div>
                     <Button disabled={busy}>{busy ? 'Checking…' : 'Find real products'}</Button>
                   </form>
-                  <p className="catalog-disclosure">Search real products beyond the current dashboard. Requests are cached and queued per store; the feed updates as checks complete. Sold-out or unverified variants cannot be requested. Nessie sandbox mode places no merchant order. Banking provider: {payments === 'nessie' ? 'Nessie v2 API' : 'local simulator (Nessie not connected)'}.</p>
+                  <p className="catalog-disclosure">Search real products beyond the current dashboard. Requests are cached and queued per store; the feed updates as checks complete. Only verified items can be requested. Nessie sandbox mode places no merchant order. Banking provider: {payments === 'nessie' ? 'Nessie v2 API' : 'local simulator (Nessie not connected)'}.</p>
                   {discoveryResults()}
-                  <Button variant="outline" disabled={busy} onClick={() => run(async () => {
-                    const result = await api<{message: string}>('/catalog/refresh', {method: 'POST'});
-                    setInventoryStatus(result.message);
-                  })}>Refresh merchant inventory</Button>
-                  {inventoryStatus && <p role="status" className="fineprint">{inventoryStatus}</p>}
                   {visibleProducts.length === 0 && <div className="empty"><Package /><h3>{catalogQuery ? 'No matching items yet.' : 'Waiting for merchant prices.'}</h3><p>{catalogQuery ? 'Try another product name or ask Gemini about the supported catalog.' : 'Merchant data may be temporarily unavailable. No products will be invented while the merchant is unavailable.'}</p></div>}
                   <section className="product-grid">
                     {visibleProducts.slice(0, visibleLimit).map((p) => {
@@ -707,9 +699,7 @@ function App() {
                               <span>{p.price_checked_at ? `Checked ${new Date(p.price_checked_at).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})}${Date.now() - new Date(p.price_checked_at).getTime() > 180000 ? ' · refresh delayed' : ''}` : 'Price not checked'}</span>
                               <a href={p.source_url || undefined} target="_blank" rel="noopener noreferrer">View at {p.seller} <ArrowUpRight size={13} /></a>
                             </div>}
-                            <p className={`availability ${p.stock_status}`}>{p.can_request ? 'Available to order · merchant verified' : p.stock_status === 'sold_out' ? 'Sold out · cannot request' : 'Availability unverified · cannot request'}</p>
-                            {!p.can_request && p.source_url && <Button variant="outline" disabled={busy} onClick={() => run(() => inspectListing(p.source_url!))}>Check current availability</Button>}
-                            <Button variant="outline" disabled={!p.can_request} onClick={() => openWatch(p)}>
+                            <Button variant="outline" disabled={!p.can_request} title={!p.can_request ? 'This item cannot be requested right now. Check the merchant listing.' : undefined} onClick={() => openWatch(p)}>
                               <Plus size={16} />
                               Watch this item
                               <ArrowUpRight size={15} />
@@ -849,7 +839,7 @@ function App() {
                     onSubmit={(e) => {
                       e.preventDefault();
                       run(async () => {
-                        const result = await api<{ message: string; inventory?: {message: string}; tools: { tool: string; result: unknown }[] }>(
+                        const result = await api<{ message: string; tools: { tool: string; result: unknown }[] }>(
                           '/assistant',
                           { method: 'POST', body: JSON.stringify({ text: chat }) },
                         );
@@ -859,7 +849,6 @@ function App() {
                           const task = call.result as CatalogTask;
                           if (task.task_id) trackTask(task);
                         });
-                        setInventoryStatus(result.inventory?.message || '');
                         setRecommendations([...new Set(result.tools.filter((t) => t.tool === 'find_product' && Array.isArray(t.result))
                           .flatMap((t) => (t.result as Product[]).map((p) => p.id)))]);
                         const created = result.tools.find((t) => t.tool === 'create_watch_draft' && (t.result as Permission)?.status === 'draft');
@@ -896,7 +885,7 @@ function App() {
                   {recommendations.length > 0 && <div className="grok-products" aria-label="Product matches">
                     {products.filter((p) => recommendations.includes(p.id)).map((p) => <div className="grok-product" key={p.id}>
                       <ProductVisual key={p.id} product={p} compact />
-                      <div><strong>{p.name}</strong><small>{p.variant} · {p.seller} · {money(p.price_cents)} · {p.can_request ? 'Available' : p.stock_status === 'sold_out' ? 'Sold out' : 'Availability unverified'}</small></div>
+                      <div><strong>{p.name}</strong><small>{p.variant} · {p.seller} · {money(p.price_cents)}</small></div>
                       <Button disabled={!p.can_request} onClick={() => openWatch(p)}>Watch this item</Button>
                     </div>)}
                   </div>}
@@ -999,11 +988,9 @@ function App() {
 
       {pickerOpen && <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="picker-title">
         <button className="modal-close" aria-label="Close item picker" onClick={() => setPickerOpen(false)}><X size={21} /></button>
-        <h2 id="picker-title">Choose an available item</h2>
-        <p>No recently verified, available variants can be requested right now. Sold-out items remain visible so you can check their status.</p>
-        {products.map((p) => <div className="selected-product" key={p.id}><ProductVisual product={p} compact /><div><strong>{p.name}</strong><small>{p.variant} · {p.can_request ? 'Available' : p.stock_status === 'sold_out' ? 'Sold out' : 'Availability unverified'}</small></div><Button disabled={!p.can_request} onClick={() => openWatch(p)}>Watch this item</Button></div>)}
-        <Button disabled={busy} onClick={() => run(async () => { const result = await api<{message: string}>('/catalog/refresh', {method:'POST'}); setInventoryStatus(result.message); })}>Check merchant availability</Button>
-        <p role="status">{inventoryStatus || 'The merchant may limit refresh frequency. We never substitute invented stock.'}</p>
+        <h2 id="picker-title">Choose an item</h2>
+        <p>No recently verified items can be requested right now. Open the merchant listing for more details.</p>
+        {products.map((p) => <div className="selected-product" key={p.id}><ProductVisual product={p} compact /><div><strong>{p.name}</strong><small>{p.variant}</small></div><Button disabled={!p.can_request} onClick={() => openWatch(p)}>Watch this item</Button></div>)}
       </section></div>}
       {selected && (
         <div className="modal-backdrop">
@@ -1222,7 +1209,7 @@ function App() {
               <X size={21} />
             </button>
             <h2 id="demo-title">Demo controls</h2>
-            <p>Real prices and stock come only from Keychron. Use the sandbox experience on an available real item to demonstrate card limits and transactions.</p>
+            <p>Real product details come from approved merchants. Use the sandbox experience on an eligible real item to demonstrate card limits and transactions.</p>
             <label htmlFor="admin-token">Demo administrator token</label>
             <input id="admin-token" type="password" value={adminToken} onChange={(e) => setAdminToken(e.target.value)} autoComplete="off" />
 
