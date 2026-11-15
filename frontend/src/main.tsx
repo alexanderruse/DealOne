@@ -462,6 +462,7 @@ function App() {
                           const canBuy =
                             w.status === 'active' &&
                             product != null &&
+                            product.source_kind !== 'merchant' &&
                             product.total_cents <= w.max_total_cents;
                           return (
                             <div className="watch-row" key={w.id}>
@@ -469,7 +470,7 @@ function App() {
                                 <strong>{product?.name}</strong>
                                 <small>{w.variant}</small>
                                 <small className="watch-meta">
-                                  {w.purchase_mode === 'auto_buy' ? 'Auto-buy' : 'Ask me first'}
+                                  {product?.source_kind === 'merchant' ? 'Merchant price alert' : w.purchase_mode === 'auto_buy' ? 'Auto-buy' : 'Ask me first'}
                                   {w.card
                                     ? ` · Card •••• ${w.card.last4} · limit ${money(w.card.limit_cents)}`
                                     : ''}
@@ -481,6 +482,7 @@ function App() {
                               </div>
                               <span className={`status ${w.status}`}>{w.status}</span>
                               <div className="row-actions">
+                                {product?.source_kind === 'merchant' && product.source_url && <a className="button button-outline" href={product.source_url} target="_blank" rel="noopener noreferrer">Review at store <ArrowUpRight size={14} /></a>}
                                 {w.status === 'draft' && (
                                   <Button
                                     disabled={busy}

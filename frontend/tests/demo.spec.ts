@@ -113,3 +113,19 @@ test('assistant tool results produce actionable matching product visuals', async
   await matches.getByRole('button', {name:'Watch this item'}).click();
   await expect(page.getByRole('dialog')).toContainText('Studio Wireless Headphones');
 });
+
+
+test('merchant watchlists link to the store without offering internal checkout', async ({page}) => {
+  const product = {id:'merchant-alert-test',name:'Keychron M3 Wireless Mouse',variant:'Black',seller:'Keychron',
+    source_kind:'merchant',source_url:'https://www.keychron.com/products/keychron-m3-wireless-mouse',
+    icon:'mouse',image_url:null,category:'Mouse',color:'merchant',price_cents:4999,total_cents:4999,original_cents:4999};
+  await page.route('**/api/products', route => route.fulfill({json:[product]}));
+  await page.route('**/api/permissions', route => route.fulfill({json:[{id:'alert',product_id:product.id,
+    max_total_cents:6000,expires_at:new Date(Date.now()+86400000).toISOString(),status:'active',
+    purchase_mode:'ask_first',variant:'Black',seller:'Keychron'}]}));
+  await page.goto('/');
+  await page.getByRole('button', {name:/^Watchlist/}).click();
+  const watch=page.locator('.watch-row');
+  await expect(watch.getByRole('link', {name:'Review at store'})).toHaveAttribute('href',product.source_url);
+  await expect(watch.getByRole('button', {name:'Approve purchase'})).toHaveCount(0);
+});
