@@ -7,7 +7,7 @@ import secrets
 from uuid import uuid4
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 from .config import settings
@@ -17,6 +17,7 @@ from .models import (Product, Permission, Order, PriceObservation, Notification,
                      ApprovedDomain, AISpendRecord, CheckoutDemoRun, utcnow)
 from . import payments
 from .payments import PaymentUnavailable
+from .schemas import DiscoveryRequest, InspectRequest, HistoryRequest
 from .schemas import (Rules, ActivateRequest, ParseRequest, AssistantRequest, PriceChange,
                       CreditLimitChange, PermissionReference, ApprovedDomainCreate, CheckoutDemoRequest)
 from .services import (serialize, product_view, permission_view, issue_card, void_card, prepare_order,
@@ -178,7 +179,20 @@ def payment_ledger(user: str = Depends(owner), db: Session = Depends(get_db)):
 @app.get("/api/products")
 def products(db: Session = Depends(get_db)):
     from .catalog import public_products
-    return [product_view(p) for p in public_products(db)]
+    return [product_view(p) for p in public_products(db)[:250]]
+
+
+@app.post("/api/price-history")
+def histories(body: HistoryRequest, db: Session = Depends(get_db)):
+    ranked = select(PriceObservation.product_id, PriceObservation.price_cents, PriceObservation.observed_at,
+        func.row_number().over(partition_by=PriceObservation.product_id,
+            order_by=PriceObservation.observed_at.desc()).label("rank")).where(
+                PriceObservation.product_id.in_(body.product_ids)).subquery()
+    rows = db.execute(select(ranked).where(ranked.c.rank <= 30).order_by(ranked.c.observed_at))
+    result = {key: [] for key in body.product_ids}
+    for row in rows:
+        result[row.product_id].append({"price_cents": row.price_cents, "observed_at": row.observed_at})
+    return result
 
 
 @app.get("/api/products/{product_id}/prices")
@@ -201,10 +215,8 @@ def parse(body: ParseRequest, user: str = Depends(owner), db: Session = Depends(
 @app.post("/api/assistant")
 def assistant(body: AssistantRequest, user: str = Depends(owner), db: Session = Depends(get_db)):
     from .ai import assistant
-    from .catalog import refresh_catalog
     try:
-        inventory = refresh_catalog()
-        db.expire_all()
+        inventory = {"status": "cached", "message": "Grok can request approved-store discovery; merchant cooldowns are shared"}
         result = assistant(body.text, db, user)
         tools = ", ".join(call["tool"] for call in result["tools"]) or "answered without tools"
         db.add(Notification(owner=user, event_key=f"assistant:{uuid4()}", message=f"Assistant command: {body.text[:160]} · {tools}. Inventory: {inventory['status']}."))
@@ -218,9 +230,48 @@ def assistant(body: AssistantRequest, user: str = Depends(owner), db: Session = 
 
 
 @app.post("/api/catalog/refresh")
-def refresh_merchant_catalog(user: str = Depends(owner)):
-    from .catalog import refresh_catalog
+def refresh_merchant_catalog(user: str = Depends(owner), db: Session = Depends(get_db)):
+    from .catalog import refresh_catalog, public_products, store_product_url
+    from .discovery import enqueue
+    sources = list(dict.fromkeys(store_product_url(p.source_url) for p in reversed(public_products(db))))[:2]
+    for store, handle in sources:
+        enqueue(db, store, "product", handle, priority=80)
+    db.commit()
     return refresh_catalog()
+
+
+@app.get("/api/catalog/stores")
+def approved_stores():
+    from .catalog import STORES
+    return [{"id": key, "name": value["name"], "domain": value["host"]} for key, value in STORES.items()]
+
+
+@app.post("/api/catalog/discover")
+def discover_products(body: DiscoveryRequest, user: str = Depends(owner), db: Session = Depends(get_db)):
+    from .discovery import discover
+    try:
+        return discover(db, body.store, body.query)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+
+@app.post("/api/catalog/inspect")
+def inspect_product(body: InspectRequest, user: str = Depends(owner), db: Session = Depends(get_db)):
+    from .discovery import inspect
+    try:
+        return inspect(db, body.url)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+
+@app.get("/api/catalog/tasks/{task_id}")
+def catalog_task(task_id: str, user: str = Depends(owner), db: Session = Depends(get_db)):
+    from .models import CatalogTask
+    from .discovery import task_view
+    task = db.get(CatalogTask, task_id)
+    if not task:
+        raise HTTPException(404, "Catalog request not found")
+    return task_view(db, task)
 
 
 @app.post("/api/permissions", status_code=201)
@@ -781,4 +832,3 @@ def view_screenshots_page(db: Session = Depends(get_db)):
 </body>
 </html>'''
     return html
-

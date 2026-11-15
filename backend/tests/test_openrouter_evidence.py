@@ -216,7 +216,7 @@ def test_price_drop_triggers_checkout_demo_run(db, factory, monkeypatch):
     monkeypatch.setattr(worker, "SessionLocal", factory)
 
     product = Product(
-        id="price-drop-keychron",
+        id="keychron-12345",
         name="Keychron K2 Pro",
         variant="RGB",
         category="Keyboard",

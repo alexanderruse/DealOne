@@ -1,11 +1,12 @@
 """Read-only merchant adapter. URLs are fixed, never supplied by a model or browser."""
 import logging
+import re
 import sys
 import time
 from email.utils import parsedate_to_datetime
-from decimal import Decimal, DecimalException
+from decimal import Decimal
 from datetime import timedelta
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 import httpx
 from playwright.sync_api import sync_playwright
@@ -13,13 +14,35 @@ from sqlalchemy import text, select
 
 from .config import settings
 from .db import SessionLocal
-from .models import Product, PriceObservation, Heartbeat, ApprovedDomain, utcnow
+from .models import Product, PriceObservation, Heartbeat, ApprovedDomain, CatalogTask, utcnow
 
+log = logging.getLogger("dealone.catalog")
+
+# Legacy real-SKU examples used by isolated acceptance fixtures; runtime discovery is query driven.
 SOURCES = (
     ("keychron-c3-pro-qmk-via-wired-mechanical-keyboard", "Keyboard", "keyboard"),
     ("keychron-m3-wireless-mouse", "Mouse", "mouse"),
 )
-log = logging.getLogger(__name__)
+STORES = {
+    "keychron": {"name": "Keychron", "host": "www.keychron.com", "aliases": ("keychron.com", "www.keychron.com")},
+    "epomaker": {"name": "Epomaker", "host": "epomaker.com", "aliases": ("epomaker.com", "www.epomaker.com")},
+}
+
+
+def store_product_url(url):
+    parsed = urlparse(url)
+    store = next((key for key, value in STORES.items() if parsed.hostname in value["aliases"]), None)
+    match = re.fullmatch(r"/products/([a-z0-9][a-z0-9-]{0,179})/?", parsed.path)
+    if parsed.scheme != "https" or parsed.port not in (None, 443) or parsed.username or parsed.password or not store or not match:
+        raise ValueError("Use a product URL from keychron.com or epomaker.com")
+    return store, match.group(1)
+
+
+def validate_handle(handle):
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,179}", handle):
+        raise ValueError("Invalid merchant product handle")
+    return handle
+
 
 
 def image_url(value):
@@ -30,13 +53,13 @@ def image_url(value):
     if value.startswith("//"):
         value = "https:" + value
     parsed = urlparse(value)
-    return value if parsed.scheme == "https" and parsed.hostname in ("cdn.shopify.com", "www.keychron.com") else None
+    return value if parsed.scheme == "https" and parsed.hostname in ("cdn.shopify.com", "www.keychron.com", "epomaker.com", "www.epomaker.com") else None
 
 
-def parse_product(payload, handle, category, icon, variant_id=None):
+def parse_product(payload, handle, category, icon, variant_id=None, store="keychron"):
     """Normalize Shopify's dollar JSON and cent JS formats without rounding floats."""
-    if handle not in {row[0] for row in SOURCES}:
-        raise ValueError("Unsupported merchant product")
+    validate_handle(handle)
+    merchant = STORES[store]
     wrapped = "product" in payload
     product = payload.get("product", payload)
     variants = product["variants"]
@@ -56,13 +79,13 @@ def parse_product(payload, handle, category, icon, variant_id=None):
                               and i.get("id") == variant.get("image_id")), None)
     if not variant_image:
         variant_image = next(iter(product.get("images", [])), None)
-    return dict(id=f"keychron-{int(variant['id'])}", name=product["title"][:180],
-                variant=variant["title"][:100], seller="Keychron", condition="new", currency="USD",
+    return dict(id=f"{store}-{int(variant['id'])}", name=product["title"][:180],
+                variant=variant["title"][:100], seller=merchant["name"], condition="new", currency="USD",
                 price_cents=price, original_cents=max(price, original), shipping_cents=0,
                 tax_basis_points=0, stock=1 if variant.get("available") is True else 0,
                 stock_status="in_stock" if variant.get("available") is True else "sold_out" if variant.get("available") is False else "unknown",
                 category=category, color="merchant", source_kind="merchant", icon=icon,
-                source_url=f"https://www.keychron.com/products/{handle}?variant={int(variant['id'])}",
+                source_url=f"https://{merchant['host']}/products/{handle}?variant={int(variant['id'])}",
                 image_url=image_url(variant_image), price_checked_at=utcnow())
 
 
@@ -77,16 +100,11 @@ def retry_delay(response):
             return 2.0
 
 
-def fetch_feed(client, handle):
-    """Respect merchant throttling with one bounded retry of the same public feed."""
-    url = f"https://www.keychron.com/products/{handle}.js"
+def fetch_feed(client, handle, store="keychron"):
+    """One public request; the shared queue handles every retry and cooldown."""
+    validate_handle(handle)
+    url = f"https://{STORES[store]['host']}/products/{handle}.js"
     response = client.get(url, params={"currency": "USD"})
-    if response.status_code == 429:
-        delay = retry_delay(response)
-        # Long waits defer to the next normal polling cycle rather than blocking a request.
-        if delay <= 10:
-            time.sleep(max(2.0, delay))
-            response = client.get(url, params={"currency": "USD"})
     response.raise_for_status()
     return response.json()
 
@@ -141,6 +159,13 @@ def refresh_catalog(force: bool = False):
     """Playwright headless browser scraping for Keychron products every 10 minutes and on-demand."""
     if not settings().real_catalog_enabled:
         return {"status": "disabled", "message": "Merchant polling is disabled"}
+    # Explicit discovery requests share the merchant gate with browser polling.
+    from . import discovery
+    with discovery.SessionLocal() as db:
+        queued = db.scalar(select(CatalogTask.id).where(CatalogTask.status == "queued").limit(1))
+    if queued:
+        from .discovery import process_catalog_queue
+        return process_catalog_queue()
     with SessionLocal.begin() as db:
         if not db.scalar(text("SELECT pg_try_advisory_xact_lock(39410421)")):
             return {"status": "busy", "message": "A merchant check is already running"}
@@ -196,14 +221,19 @@ def refresh_catalog(force: bool = False):
 
 
 def approved_product(product):
-    return bool(product and product.source_kind == "merchant" and product.seller == "Keychron"
-                and product.source_url and any(product.source_url.startswith(
-                    f"https://www.keychron.com/products/{row[0]}?variant=") for row in SOURCES))
+    if not product or product.source_kind != "merchant" or not product.source_url:
+        return False
+    try:
+        store, _ = store_product_url(product.source_url)
+        variant = parse_qs(urlparse(product.source_url).query).get("variant", [""])[0]
+        return product.seller == STORES[store]["name"] and variant.isdigit() and product.id == f"{store}-{int(variant)}"
+    except ValueError:
+        return False
 
 
 def public_products(db):
-    return [p for p in db.scalars(select(Product).where(Product.source_kind == "merchant", Product.seller == "Keychron").order_by(Product.id))
-            if approved_product(p)]
+    return [p for p in db.scalars(select(Product).where(Product.source_kind == "merchant")
+            .order_by(Product.price_checked_at.desc(), Product.id)) if approved_product(p)]
 
 
 def requestable(product):
@@ -229,5 +259,5 @@ def revalidate_product(db, product):
             return  # Unit-test fixtures are never exposed by the public catalog.
         raise ValueError("This legacy demonstration item is no longer supported")
     # A verified snapshot avoids turning every UI command into a throttled merchant request.
-    # The worker refreshes each supported product about every 130 seconds. Older data fails closed.
+    # Only a recent verified exact-variant snapshot may be used. Older data fails closed.
     ensure_requestable(product)

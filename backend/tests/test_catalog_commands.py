@@ -12,30 +12,36 @@ from tests.test_merchant_catalog import merchant_record
 
 
 def test_refresh_is_shared_paced_and_ingests_mixed_variants(factory, monkeypatch):
+    from app import discovery
     monkeypatch.setattr(settings(), "real_catalog_enabled", True)
-    monkeypatch.setattr(catalog, "SessionLocal", factory)
-    fetch = Mock(return_value={"title": "Keychron M3", "variants": [
+    monkeypatch.setattr(discovery, "SessionLocal", factory)
+    fetch = Mock(return_value={"title": "Keychron Keycaps", "variants": [
         {"id": 1, "title": "Black", "price": 4999, "available": False},
         {"id": 2, "title": "White", "price": 5999, "available": True}]})
-    monkeypatch.setattr(catalog, "fetch_feed", fetch)
+    monkeypatch.setattr(discovery, "fetch_feed", fetch)
+    with factory.begin() as db:
+        discovery.enqueue(db, "keychron", "product", "new-keycap-set")
+        discovery.enqueue(db, "keychron", "product", "silent-switches")
     assert catalog.refresh_catalog()["status"] == "updated"
-    assert fetch.call_args.args[1] == catalog.SOURCES[1][0]
+    assert fetch.call_args.args[1] == "new-keycap-set"
     assert catalog.refresh_catalog()["status"] == "scheduled"
     assert fetch.call_count == 1
     with factory.begin() as db:
-        rows = catalog.public_products(db)
-        assert {p.stock_status for p in rows} == {"in_stock", "sold_out"}
+        assert {p.stock_status for p in catalog.public_products(db)} == {"in_stock", "sold_out"}
         db.get(Heartbeat, "catalog:gate").updated_at = utcnow() - timedelta(seconds=66)
     assert catalog.refresh_catalog()["status"] == "updated"
-    assert fetch.call_args.args[1] == catalog.SOURCES[0][0]
+    assert fetch.call_args.args[1] == "silent-switches"
 
 
 def test_long_backoff_is_persisted_without_freshening_old_stock(factory, monkeypatch):
+    from app import discovery
     monkeypatch.setattr(settings(), "real_catalog_enabled", True)
-    monkeypatch.setattr(catalog, "SessionLocal", factory)
+    monkeypatch.setattr(discovery, "SessionLocal", factory)
     request = httpx.Request("GET", "https://www.keychron.com/products/test.js")
     response = httpx.Response(429, request=request, headers={"Retry-After": "120"})
-    monkeypatch.setattr(catalog, "fetch_feed", Mock(side_effect=httpx.HTTPStatusError("limited", request=request, response=response)))
+    monkeypatch.setattr(discovery, "fetch_feed", Mock(side_effect=httpx.HTTPStatusError("limited", request=request, response=response)))
+    with factory.begin() as db:
+        discovery.enqueue(db, "keychron", "product", "new-switches")
     assert catalog.refresh_catalog()["status"] == "unavailable"
     with factory() as db:
         assert db.get(Heartbeat, "catalog:gate").updated_at > utcnow() + timedelta(seconds=50)
@@ -46,7 +52,7 @@ def test_long_backoff_is_persisted_without_freshening_old_stock(factory, monkeyp
 def test_grok_search_returns_both_stock_states_and_no_fictional_products(db):
     record = merchant_record()
     db.add(Product(**record))
-    sold_out = {**record, "id": "keychron-5678", "variant": "White", "stock_status": "sold_out", "stock": 0}
+    sold_out = {**record, "id": "keychron-5678", "variant": "White", "stock_status": "sold_out", "stock": 0, "source_url": record["source_url"].replace("1234", "5678")}
     db.add(Product(**sold_out)); db.commit()
     rows = ai.execute_tool("find_product", SearchRequest(query="Keychron"), db, "user")
     assert {p["stock_status"] for p in rows} == {"in_stock", "sold_out"}

@@ -108,3 +108,36 @@ test('mobile and desktop real catalog fit without browser errors',async({page})=
   await page.screenshot({path:'test-results/dealone-real-desktop.png',fullPage:true});
   expect(errors).toEqual([]);
 });
+
+test('store discovery displays real listing previews and queued variant checks',async({page})=>{
+  const task={task_id:'search-task',store:'epomaker',status:'complete',message:'Found a real keycap listing',products:[],
+    listings:[{handle:'epomaker-aegissil-keycaps-set',name:'EPOMAKER AegisSil Keycaps Set',seller:'Epomaker',
+      source_url:'https://epomaker.com/products/epomaker-aegissil-keycaps-set',image_url:null,price_from_cents:1500}]};
+  await page.route('**/api/catalog/discover',async route=>{
+    expect(route.request().postDataJSON()).toEqual({store:'epomaker',query:'silicone keycaps'});
+    await route.fulfill({json:task});
+  });
+  await page.route('**/api/catalog/tasks/search-task',route=>route.fulfill({json:task}));
+  const queued={...task,task_id:'inspect-task',status:'queued',listings:[],message:'Queued for merchant verification'};
+  await page.route('**/api/catalog/inspect',route=>route.fulfill({json:queued}));
+  await page.route('**/api/catalog/tasks/inspect-task',route=>route.fulfill({json:queued}));
+  await page.goto('/');
+  await page.getByLabel('Approved store',{exact:true}).selectOption('epomaker');
+  await page.getByLabel('Search the store or paste a product link').fill('silicone keycaps');
+  await page.getByRole('button',{name:'Find real products'}).click();
+  const preview=page.locator('.discovery-card');
+  await expect(preview).toContainText('EPOMAKER AegisSil Keycaps Set');
+  await expect(preview).toContainText('From $15.00');
+  await expect(preview.getByRole('button',{name:'Watch this item'})).toHaveCount(0);
+  await preview.getByRole('button',{name:'Check variants & stock'}).click();
+  await expect(page.getByLabel('Live merchant discovery')).toContainText('Queued for merchant verification');
+});
+
+test('red and black theme keeps product text readable',async({page})=>{
+  await page.goto('/');
+  await expect(page.locator('.product-card')).toHaveCount(2);
+  const colors=await page.locator(':root').evaluate(el=>({red:getComputedStyle(el).getPropertyValue('--brand-red').trim(),ink:getComputedStyle(el).getPropertyValue('--ink').trim()}));
+  expect(colors).toEqual({red:'#c8102e',ink:'#171717'});
+  expect(await page.locator('.product-info > p').first().evaluate(el=>parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(16);
+  expect(await page.locator('.product-info h3').first().evaluate(el=>parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(20);
+});
