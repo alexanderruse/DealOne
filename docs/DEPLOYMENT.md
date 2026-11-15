@@ -8,7 +8,7 @@ Open [repository Actions secrets](https://github.com/alexanderruse/DealOne/setti
 | --- | --- |
 | `VULTR_API_KEY` | Current Vultr API key with access to the existing VKE cluster and container registry |
 | `DATABASE_URL` | Tiger Cloud SQLAlchemy URL: `postgresql+psycopg://USER:PASSWORD@HOST:PORT/tsdb?sslmode=require` |
-| `XAI_API_KEY` | Sponsor-provided Grok API key |
+| `OPENROUTER_API_KEY` | OpenRouter API key for the shopping assistant |
 | `SESSION_SECRET` | A unique random value of at least 32 characters |
 | `DEMO_ADMIN_TOKEN` | A different unique random value of at least 24 characters |
 | `RESEND_API_KEY` | Optional; reserved for future email opt-in support |
@@ -25,7 +25,9 @@ Create these repository **Variables**:
 | Variable | Value |
 | --- | --- |
 | `ACME_EMAIL` | Team email for Let's Encrypt registration; required when deployment configures HTTPS |
-| `XAI_MODEL` | Exact enabled model ID from your sponsor account; must support structured outputs and function calling |
+| `OPENROUTER_MODEL` | Exact enabled OpenRouter model ID; must support structured outputs and function calling (local example: `google/gemini-3.8-flash`) |
+| `AI_BUDGET_USD` | Rolling AI spend ceiling; deployment defaults to `20` when unset |
+| `AI_BUDGET_WINDOW_SECONDS` | Rolling budget window in seconds; deployment defaults to `10800` (3 hours) when unset |
 | `VULTR_CLUSTER_ID` | UUID of your existing Vultr Kubernetes cluster (`dealone-cluster`); use the cluster ID from its console URL or API, not its label or IP address |
 | `VULTR_REGISTRY_ENDPOINT` | Optional override; otherwise discovered from Vultr metadata, including the registry namespace |
 | `RESEND_FROM_EMAIL` | Optional; reserved for future email delivery |
@@ -75,15 +77,42 @@ Vultr's registry credential endpoint used here is the documented registry API `O
 
 The migration job must succeed before the workload rollout. New deployment configuration uses Kubernetes Secrets and a ConfigMap. Use additive migrations for future releases: reverting images does not revert schema or credentials.
 
+Migration `0007` stores masked checkout screenshot PNGs in Tiger Data Postgres so every API replica can serve the same evidence after restarts. Image bytes are fetched only by the screenshot endpoint; gallery metadata checks do not load the images. Legacy local files remain a fallback while they exist. New captures are needed for historical files already lost with their containers. At larger screenshot volumes, migrate images to object storage and retain their metadata in Postgres.
+
 ## 4. Verify and operate
+
+For local diagnostics, first connect to the existing cluster. With `VULTR_API_KEY` and `VULTR_CLUSTER_ID` securely exported, run:
+
+```sh
+export KUBECONFIG="$(mktemp -t dealone-kubeconfig)"
+python3 scripts/vultr.py kubeconfig
+```
+
+If credentials have already been downloaded into this repository's ignored `.kube/production.kubeconfig`, connect from the repository root with `export KUBECONFIG="$PWD/.kube/production.kubeconfig"`. Then run the diagnostics below. Keep this credential file private and out of Git.
 
 ```sh
 kubectl -n dealone get pods,ingress,certificate
-kubectl -n dealone logs deployment/worker --tail=50
+kubectl -n dealone logs -l app=api --all-containers=true --prefix=true --tail=100 --since=30m
+kubectl -n dealone logs -l app=worker --all-containers=true --prefix=true --tail=100 --since=30m
 kubectl -n dealone rollout status deployment/api
 curl --fail https://dealone.work/api/health/ready
 curl --fail https://dealone.work/api/health/worker
 ```
+
+For a crashed container, use `kubectl -n dealone logs POD_NAME --previous --tail=100`. Add `-f` to the selector-based log commands to follow live output.
+
+Check the effective AI settings in each API replica without printing credentials:
+
+```sh
+for pod in $(kubectl -n dealone get pods -l app=api -o name); do
+  echo "$pod"
+  kubectl -n dealone exec "$pod" -- python -c 'from app.config import settings; s = settings(); print({"OPENROUTER_API_KEY_set": bool(s.openrouter_api_key), "OPENROUTER_MODEL": s.openrouter_model, "AI_BUDGET_USD": s.ai_budget_usd, "AI_BUDGET_WINDOW_SECONDS": s.ai_budget_window_seconds})'
+done
+```
+
+Production does not generate or read the local development `.env` for deployment. GitHub Actions passes the API key to the `dealone-runtime` Kubernetes Secret and the model/budget values to the `dealone-config` ConfigMap. Both API and worker pods import these resources through `envFrom`. Set the GitHub secret and variables, then redeploy; changing GitHub settings alone does not update running pods. Deployment requires the OpenRouter key/model and restarts workloads after updating configuration. Legacy `XAI_API_KEY`/`XAI_MODEL` repository settings do not configure OpenRouter.
+
+If you created a temporary kubeconfig with `mktemp`, remove it when finished: `rm -f "$KUBECONFIG"; unset KUBECONFIG`.
 
 Once DNS propagates and the certificate is Ready, all three health routes and the dashboard should work over HTTPS. If certificate issuance is pending, check DNS and cert-manager's Certificate/Order/Challenge resources before retrying. The deploy workflow fails if public HTTPS or worker health does not pass.
 

@@ -32,12 +32,14 @@ jobs:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
       DEMO_ADMIN_TOKEN: ${{ secrets.DEMO_ADMIN_TOKEN }}
-      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL }}
+      AI_BUDGET_USD: ${{ vars.AI_BUDGET_USD }}
+      AI_BUDGET_WINDOW_SECONDS: ${{ vars.AI_BUDGET_WINDOW_SECONDS }}
       NESSIE_API_KEY: ${{ secrets.NESSIE_API_KEY }}
       NESSIE_CUSTOMER_ID: ${{ vars.NESSIE_CUSTOMER_ID }}
       NESSIE_MERCHANT_ID: ${{ vars.NESSIE_MERCHANT_ID }}
       NESSIE_CARD_ACCOUNT_ID: ${{ vars.NESSIE_CARD_ACCOUNT_ID }}
-      XAI_MODEL: ${{ vars.XAI_MODEL }}
       APP_DOMAIN: dealone.work
       RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
       RESEND_FROM_EMAIL: ${{ vars.RESEND_FROM_EMAIL }}

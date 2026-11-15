@@ -106,6 +106,9 @@ def test_checkout_demo_queue_and_safeguards(client, db, factory, tmp_path, monke
     from app import worker
     monkeypatch.setattr(worker, "SessionLocal", factory)
     monkeypatch.setattr(settings(), "screenshot_storage_path", str(tmp_path))
+    clock = Mock(wraps=worker.time)
+    clock.monotonic.side_effect = [0, 16]
+    monkeypatch.setattr(worker, "time", clock)
 
     # Create product and permission
     product = Product(
@@ -178,15 +181,21 @@ def test_checkout_demo_queue_and_safeguards(client, db, factory, tmp_path, monke
 
     db.expire_all()
     updated_run = db.get(CheckoutDemoRun, demo_run["id"])
-    assert updated_run.status == "completed"
+    assert updated_run.status == "blocked"
+    assert "card_number" in updated_run.blocker_reason
     assert updated_run.is_submitted is False
     assert updated_run.screenshot_path is not None
+    assert updated_run.screenshot_png == b"FAKE_PNG_BYTES"
+    # Simulate the next request landing on another replica with no local PNG.
+    Path(updated_run.screenshot_path).unlink()
 
     # Check evidence listing endpoint
     res = client.get("/api/demo/checkout-demos", headers=admin_headers)
     assert res.status_code == 200
     runs = res.json()
     assert any(r["id"] == demo_run["id"] for r in runs)
+    assert next(r for r in runs if r['id'] == demo_run['id'])['has_screenshot'] is True
+    assert all('screenshot_png' not in r for r in runs)
 
     # Check evidence screenshot image endpoint
     res = client.get(f"/api/screenshots/{demo_run['id']}")
@@ -198,6 +207,31 @@ def test_checkout_demo_queue_and_safeguards(client, db, factory, tmp_path, monke
     assert res.status_code == 200
     assert "Checkout Automation Evidence Gallery" in res.text
     assert "NOT SUBMITTED" in res.text
+
+
+def test_masked_phone_input_is_retried_and_verified():
+    from app.worker import fill_verified_digits
+    loc = Mock()
+    loc.input_value.side_effect = ["(555) 019-9", "(201) 555-0199"]
+    loc.get_attribute.return_value = None
+    assert fill_verified_digits(loc, "2015550199") is True
+    loc.press_sequentially.assert_called_once_with("2015550199", delay=50)
+
+
+def test_invalid_phone_is_not_marked_complete():
+    from app.worker import fill_verified_digits
+    loc = Mock()
+    loc.input_value.return_value = "(201) 555-0199"
+    loc.get_attribute.return_value = "true"
+    assert fill_verified_digits(loc, "2015550199") is False
+
+
+def test_flash_38_cost_fallback(monkeypatch):
+    from types import SimpleNamespace
+    from app.ai import extract_cost
+    monkeypatch.setattr(settings(), "openrouter_model", "google/gemini-3.8-flash")
+    response = SimpleNamespace(usage=SimpleNamespace(prompt_tokens=1000, completion_tokens=1000))
+    assert extract_cost(response) == 0.0045
 
 
 def test_unconfigured_openrouter_returns_503(client, monkeypatch):

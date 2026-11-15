@@ -3,6 +3,7 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 import os
 import subprocess
 from pathlib import Path
@@ -23,7 +24,7 @@ def resource(kind, name, data):
 
 
 def runtime_config():
-    required = ["DATABASE_URL", "SESSION_SECRET", "DEMO_ADMIN_TOKEN", "XAI_API_KEY"]
+    required = ["DATABASE_URL", "SESSION_SECRET", "DEMO_ADMIN_TOKEN", "OPENROUTER_API_KEY"]
     missing = [name for name in required if not os.getenv(name)]
     if missing:
         raise RuntimeError("Missing secrets: " + ", ".join(missing))
@@ -34,15 +35,24 @@ def runtime_config():
         raise RuntimeError("DATABASE_URL must start with postgresql+psycopg:// for SQLAlchemy/Psycopg 3")
     if not any(f"sslmode={mode}" in db_url for mode in ("require", "verify-ca", "verify-full")):
         raise RuntimeError("DATABASE_URL must require TLS")
-    if not os.getenv("XAI_MODEL"):
-        raise RuntimeError("Set XAI_MODEL to the sponsor-enabled model identifier")
+    if not os.getenv("OPENROUTER_MODEL", "").strip():
+        raise RuntimeError("Set OPENROUTER_MODEL to the enabled OpenRouter model identifier")
+    budget_usd = os.getenv("AI_BUDGET_USD", "").strip() or "20"
+    budget_window = os.getenv("AI_BUDGET_WINDOW_SECONDS", "").strip() or "10800"
+    try:
+        if not math.isfinite(float(budget_usd)) or float(budget_usd) <= 0 or int(budget_window) <= 0:
+            raise ValueError
+    except ValueError:
+        raise RuntimeError("AI_BUDGET_USD must be finite and positive; AI_BUDGET_WINDOW_SECONDS must be a positive integer") from None
     secrets = {k: os.getenv(k, "") for k in required + ["RESEND_API_KEY", "RESEND_FROM_EMAIL", "NESSIE_API_KEY"]}
     # Nessie turns on when the API key plus a customer (preferred) or shared card account are set.
     nessie = bool(os.getenv("NESSIE_API_KEY") and (os.getenv("NESSIE_CUSTOMER_ID") or os.getenv("NESSIE_CARD_ACCOUNT_ID")))
     if nessie and not os.getenv("NESSIE_MERCHANT_ID"):
         raise RuntimeError("Nessie production mode requires NESSIE_MERCHANT_ID")
     config = {"APP_ENV": "production", "APP_DOMAIN": os.getenv("APP_DOMAIN", "dealone.work"),
-              "XAI_MODEL": os.environ["XAI_MODEL"], "PAYMENTS_MODE": "nessie" if nessie else "simulation",
+              "OPENROUTER_MODEL": os.environ["OPENROUTER_MODEL"].strip(),
+              "AI_BUDGET_USD": budget_usd, "AI_BUDGET_WINDOW_SECONDS": budget_window,
+              "PAYMENTS_MODE": "nessie" if nessie else "simulation",
               "REAL_CATALOG_ENABLED": "true",
               "NESSIE_CARD_ACCOUNT_ID": os.getenv("NESSIE_CARD_ACCOUNT_ID", ""),
               "NESSIE_CUSTOMER_ID": os.getenv("NESSIE_CUSTOMER_ID", ""),

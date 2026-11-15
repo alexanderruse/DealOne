@@ -26,7 +26,7 @@ def total(product):
 
 
 def serialize(record):
-    return {c.name: getattr(record, c.name) for c in record.__table__.columns}
+    return {c.name: getattr(record, c.name) for c in record.__table__.columns if c.name != "screenshot_png"}
 
 
 def product_view(product):
