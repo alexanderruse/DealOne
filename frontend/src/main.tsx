@@ -35,6 +35,8 @@ import {
 } from 'lucide-react';
 import { Button } from './components/ui/button';
 import { api, money } from './lib';
+import { PriceHistory } from './components/PriceHistory';
+import { usePriceHistory } from './usePriceHistory';
 import './style.css';
 
 type ApprovedDomain = {
@@ -138,7 +140,6 @@ type LedgerEntry = {
 };
 type Ledger = { charges: LedgerEntry[]; nessie: LedgerEntry[] };
 type Notice = { id: string; message: string; created_at: string };
-type Observation = { price_cents: number; observed_at: string };
 type Rules = { product_id: string; max_total_cents: number; expires_at: string; quantity: 1 };
 type Listing = {handle: string; name: string; seller: string; source_url: string; image_url: string | null; price_from_cents: number};
 type CatalogTask = {task_id: string; store: string; status: string; message: string; checked_at?: string; next_check_at?: string; listings: Listing[]; products: Product[]};
@@ -157,7 +158,6 @@ function App() {
   const [watches, setWatches] = useState<Permission[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [notices, setNotices] = useState<Notice[]>([]);
-  const [histories, setHistories] = useState<Record<string, Observation[]>>({});
   const [page, setPage] = useState(window.location.pathname === '/screenshots' ? 'Evidence Gallery' : 'Overview');
   const [checkoutMode, setCheckoutMode] = useState<'merchant_handoff' | 'sandbox'>('merchant_handoff');
   const [sandboxTotal, setSandboxTotal] = useState('');
@@ -218,13 +218,6 @@ function App() {
       api<AIBudget>('/ai/budget').then(setAiBudget).catch(() => setAiBudget(null)),
       api<CheckoutDemoRun[]>('/demo/checkout-demos').then(setCheckoutDemos).catch(() => setCheckoutDemos([])),
     ]);
-    const history = await Promise.all(
-      p.map(
-        async (product) =>
-          [product.id, await api<Observation[]>(`/products/${product.id}/prices`)] as const,
-      ),
-    );
-    setHistories(Object.fromEntries(history));
     await bankReads;
   }
   useEffect(() => {
@@ -324,6 +317,7 @@ function App() {
   }
   const visibleProducts = products.filter((p) => p.source_kind === 'merchant'
     && `${p.name} ${p.category} ${p.seller} ${p.variant}`.toLowerCase().includes(catalogQuery.toLowerCase()));
+  const histories = usePriceHistory(visibleProducts.slice(0, visibleLimit), page === 'Overview' || page === 'Watchlist');
   const SelectedIcon = selected ? icons[selected.icon as keyof typeof icons] || icons[selected.id as keyof typeof icons] || Package : Radar;
   const activeWatches = watches.filter((w) => w.status === 'active').length;
   const completed = orders.filter((o) => o.status === 'completed');
@@ -680,16 +674,6 @@ function App() {
                   {visibleProducts.length === 0 && <div className="empty"><Package /><h3>{catalogQuery ? 'No matching items yet.' : 'Waiting for merchant prices.'}</h3><p>{catalogQuery ? 'Try another product name or ask Gemini about the supported catalog.' : 'Merchant data may be temporarily unavailable. No products will be invented while the merchant is unavailable.'}</p></div>}
                   <section className="product-grid">
                     {visibleProducts.slice(0, visibleLimit).map((p) => {
-                      const history = histories[p.id] || [];
-                      const chart = history.slice(-30).map((x) => x.price_cents);
-                      const max = Math.max(...chart, 1);
-                      const min = Math.min(...chart, max - 1);
-                      const points = chart
-                        .map(
-                          (v, i) =>
-                            `${(i / Math.max(chart.length - 1, 1)) * 260},${45 - ((v - min) / Math.max(max - min, 1)) * 33}`,
-                        )
-                        .join(' ');
                       return (
                         <article className="product-card" key={p.id}>
                           <div className={`product-art ${p.color}`}>
@@ -718,26 +702,7 @@ function App() {
                               {p.original_cents > p.price_cents && <del>{money(p.original_cents)}</del>}
                               <span>USD</span>
                             </div>
-                            <div className="price-chart">
-                              <svg
-                                viewBox="0 0 260 50"
-                                preserveAspectRatio="none"
-                                aria-label="Observed price history"
-                              >
-                                <polyline
-                                  points={points}
-                                  fill="none"
-                                  stroke="#b91c2b"
-                                  strokeWidth="2"
-                                  vectorEffect="non-scaling-stroke"
-                                />
-                              </svg>
-                              <div>
-                                <span>{history.length > 1 ? `${history.length} observed prices` : 'Tracking started · history builds over time'}</span>
-                                <span>{p.source_kind === 'merchant' ? 'Before tax & shipping' : `All in ${money(p.total_cents)}`}</span>
-                              </div>
-                              {history.length > 1 && <p className="history-range">Low {money(Math.min(...chart))} · High {money(Math.max(...chart))}<br />{new Date(history[0].observed_at).toLocaleDateString()} – {new Date(history[history.length-1].observed_at).toLocaleDateString()}</p>}
-                            </div>
+                            <PriceHistory observations={histories[p.id]} name={`${p.name} · ${p.variant}`} />
                             {p.source_kind === 'merchant' && <div className="merchant-provenance">
                               <span>{p.price_checked_at ? `Checked ${new Date(p.price_checked_at).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})}${Date.now() - new Date(p.price_checked_at).getTime() > 180000 ? ' · refresh delayed' : ''}` : 'Price not checked'}</span>
                               <a href={p.source_url || undefined} target="_blank" rel="noopener noreferrer">View at {p.seller} <ArrowUpRight size={13} /></a>
