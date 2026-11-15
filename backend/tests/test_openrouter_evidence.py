@@ -273,6 +273,7 @@ def test_checkout_recovery_observes_each_step_and_rejects_payment_actions():
     from app.worker import recover_demo_checkout
 
     page = Mock(url="https://merchant.example/checkouts/example", frames=[])
+    page.locator.return_value.all.return_value = []
     steps = page.get_by_role.return_value.filter.return_value
     steps.all_text_contents.side_effect = [["Continue to delivery"], [], []]
     button = steps.nth.return_value.element_handle.return_value
@@ -297,6 +298,29 @@ def test_checkout_recovery_observes_each_step_and_rejects_payment_actions():
     with patch("app.worker.checkout_suggestion", return_value={"continue": 0}):
         recover_demo_checkout(page, {}, [], {})
     button.click.assert_called_once()
+
+
+def test_checkout_recovery_uses_one_masked_image_for_an_explicit_stage_link():
+    from app.worker import explicit_checkout_stage_links, recover_demo_checkout
+
+    url = "https://merchant.example/checkouts/example"
+    page = Mock(url=url, frames=[Mock()])
+    page.frames[0].locator.return_value.filter.return_value.count.return_value = 0
+    page.get_by_role.return_value.filter.return_value.all_text_contents.return_value = []
+    links = page.locator.return_value.all
+    delivery, shipping, pay = Mock(), Mock(), Mock()
+    delivery.evaluate.return_value = url + "?step=delivery"
+    shipping.evaluate.return_value = url + "?step=shipping"
+    pay.evaluate.return_value = url + "?step=pay"
+    links.side_effect = [[delivery, pay], [delivery, shipping, pay]]
+    assert explicit_checkout_stage_links(page) == [("delivery", url + "?step=delivery")]
+    page.screenshot.return_value = b"fake jpeg"
+    with patch("app.worker.checkout_suggestion", return_value={"go": 0}) as suggest:
+        recover_demo_checkout(page, {}, [], {})
+    suggest.assert_called_once()
+    assert suggest.call_args.kwargs["screenshot"] == b"fake jpeg"
+    assert page.screenshot.call_args.kwargs["mask"] == [page.frames[0].locator.return_value]
+    page.goto.assert_called_once_with(url + "?step=delivery", wait_until="domcontentloaded", timeout=2500)
 
 
 def test_masked_phone_input_is_retried_and_verified():

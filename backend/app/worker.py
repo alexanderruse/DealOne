@@ -464,6 +464,26 @@ def advance_demo_delivery(page, profile, completed):
             return
 
 
+def explicit_checkout_stage_links(page):
+    current = urlparse(page.url)
+    current_query = parse_qs(current.query, keep_blank_values=True)
+    current_query.pop("step", None)
+    links = []
+    for control in page.locator('a[href*="step="]:visible').all()[:10]:
+        try:
+            target = urlparse(control.evaluate("el => el.href", timeout=500))
+        except PlaywrightError:
+            continue
+        query = parse_qs(target.query, keep_blank_values=True)
+        steps = query.pop("step", [])
+        if ((target.scheme, target.netloc, target.path) != (current.scheme, current.netloc, current.path)
+                or query != current_query or len(steps) != 1):
+            continue
+        if steps[0] in {"contact_information", "shipping", "shipping_method", "delivery", "payment", "payment_method"}:
+            links.append((steps[0], target.geturl()))
+    return links
+
+
 def recover_demo_checkout(page, profile, completed, recovered_inputs):
     """Let Gemini pick one allowed action at a time when checkout stalls."""
     checkout_url = urlparse(page.url)
@@ -472,6 +492,12 @@ def recover_demo_checkout(page, profile, completed, recovered_inputs):
     deadline = time.monotonic() + 22
     fields = (*CONTACT_FIELDS, "state", "phone")
     used = set()
+    visual_used = False
+    instruction = (
+        'Choose one action: {"fill": "<field>", "control": "<input ID>"}, '
+        '{"continue": <stage index>}, or {"go": <stage link index>}. Indices are zero-based. '
+        'Return {} if no provided option safely advances checkout.'
+    )
     for _ in range(4):
         remaining = deadline - time.monotonic()
         if remaining < 3 or urlparse(page.url).netloc != checkout_url.netloc:
@@ -482,19 +508,60 @@ def recover_demo_checkout(page, profile, completed, recovered_inputs):
             for frame in page.frames
         ):
             return  # Playwright's hosted payment-field handler takes over here.
+        action_url = page.url
         steps = page.get_by_role("button", name=DELIVERY_STEP).filter(visible=True)
         step_labels = steps.all_text_contents()[:4]
-        labels, targets = demo_contact_controls(page, deadline=deadline) if missing else ({}, {})
-        if deadline - time.monotonic() < 2 or (not labels and not step_labels):
-            return
-        plan = checkout_suggestion(
-            'Choose the single next action from the available controls: {"fill": "<field>", "control": "<input ID>"} '
-            'or {"continue": <zero-based stage index>}. Return {} if no action safely advances the demo.',
-            {"missing_fields": missing, "inputs": labels, "stages": step_labels,
-             "completed_fields": completed}, timeout=min(4, max(0.5, deadline - time.monotonic() - 2)))
+        labels, targets = {}, {}
+        plan = {}
+        links = []
+        for field, input_type in (("email", "email"), ("phone", "tel")):
+            if field not in missing:
+                continue
+            known = page.locator(f'input[type="{input_type}"]:visible:enabled:not([readonly])')
+            if known.count() == 1:
+                try:
+                    handle = known.element_handle(timeout=500)
+                    if not handle.input_value(timeout=500):
+                        targets["known"] = handle
+                        plan = {"fill": field, "control": "known"}
+                        break
+                except PlaywrightError:
+                    continue
+        if not plan:
+            labels, targets = demo_contact_controls(page, deadline=deadline) if missing else ({}, {})
+            data = {"missing_fields": missing, "inputs": labels, "stages": step_labels,
+                    "completed_fields": completed}
+            if deadline - time.monotonic() >= 3 and (labels or step_labels):
+                plan = checkout_suggestion(instruction, data, timeout=min(4, deadline - time.monotonic() - 2))
+                if not (
+                    isinstance(plan.get("fill"), str) and plan["fill"] in missing
+                    and isinstance(plan.get("control"), str) and plan["control"] in targets
+                    or type(plan.get("continue")) is int and 0 <= plan["continue"] < len(step_labels)
+                ):
+                    plan = {}
+            if not plan and not visual_used and deadline - time.monotonic() >= 5:
+                if page.url != action_url:
+                    return
+                links = explicit_checkout_stage_links(page)
+                if not labels and not step_labels and len(links) == 1:
+                    plan = {"go": 0}
+                elif labels or step_labels or links:
+                    visual_used = True
+                    masks = [frame.locator("input, textarea, select, [contenteditable]") for frame in page.frames]
+                    try:
+                        screenshot = page.screenshot(type="jpeg", quality=55, scale="css", mask=masks, timeout=1500)
+                    except PlaywrightError:
+                        return
+                    remaining = deadline - time.monotonic()
+                    if remaining < 2 or page.url != action_url:
+                        return
+                    plan = checkout_suggestion(instruction + " Stage links have verified destinations; an icon may have no label.", {
+                        **data, "stage_links": [step for step, _ in links],
+                    }, timeout=min(5, remaining - 1), screenshot=screenshot)
         field, control = plan.get("fill"), plan.get("control")
         stage = plan.get("continue")
-        if time.monotonic() >= deadline or urlparse(page.url).netloc != checkout_url.netloc:
+        link = plan.get("go")
+        if time.monotonic() >= deadline or page.url != action_url:
             return
         try:
             if isinstance(field, str) and field in missing and isinstance(control, str) and control in targets:
@@ -520,6 +587,12 @@ def recover_demo_checkout(page, profile, completed, recovered_inputs):
                 step.evaluate("el => el.dataset.dealoneAdvance = 'true'")
                 step.click(timeout=2500)
                 page.wait_for_timeout(400)
+            elif type(link) is int and 0 <= link < len(links):
+                target = links[link][1]
+                if target == action_url or target in used:
+                    return
+                used.add(target)
+                page.goto(target, wait_until="domcontentloaded", timeout=2500)
             else:
                 return
         except PlaywrightError:
