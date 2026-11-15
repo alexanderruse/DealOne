@@ -53,7 +53,7 @@ test('empty, single and invalid observations do not render empty chart panels', 
   await expect(page.locator('.watch-row')).toHaveCount(2);
   await expect(page.locator('.price-history')).toHaveCount(0);
   await expect(page.locator('.price-chart')).toHaveCount(0);
-  await expect(mouse(page).getByRole('button', {name: 'Cancel'})).toBeEnabled();
+  await expect(mouse(page).getByRole('button', {name: 'Remove watch', exact: true})).toBeEnabled();
 });
 
 test('unchanged prices show a compact notice instead of a chart', async ({ page }) => {
@@ -73,7 +73,7 @@ test('unavailable history does not break the Watchlist', async ({ page }) => {
   await expect(page.locator('.watch-row')).toHaveCount(2);
   await expect(page.locator('.price-history')).toHaveCount(0);
   await expect(page.getByRole('alert')).toHaveCount(0);
-  await expect(mouse(page).getByRole('button', {name: 'Cancel'})).toBeEnabled();
+  await expect(mouse(page).getByRole('button', {name: 'Remove watch', exact: true})).toBeEnabled();
 });
 
 test('long observation gaps are not connected', async ({ page }) => {
@@ -97,7 +97,7 @@ test('slow history times out while the product remains usable', async ({ page })
   await page.getByRole('button', {name: 'Watchlist', exact: true}).click();
   await expect(page.locator('.watch-row')).toHaveCount(2);
   await expect.poll(() => aborted, {timeout: 6000}).toBe(true);
-  await expect(mouse(page).getByRole('button', {name: 'Cancel'})).toBeEnabled();
+  await expect(mouse(page).getByRole('button', {name: 'Remove watch', exact: true})).toBeEnabled();
   await expect(page.locator('.price-history')).toHaveCount(0);
 });
 
@@ -110,5 +110,5 @@ test('inline history fits a mobile watch row', async ({ page }) => {
   await page.getByRole('button', {name: 'Watchlist', exact: true}).click();
   await expect(mouse(page).locator('.price-history')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
-  await expect(mouse(page).getByRole('button', {name: 'Cancel'})).toBeEnabled();
+  await expect(mouse(page).getByRole('button', {name: 'Remove watch', exact: true})).toBeEnabled();
 });
