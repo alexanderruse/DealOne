@@ -110,3 +110,22 @@ def test_grok_can_parse_catalog_with_real_price_timestamps(db, monkeypatch):
     with pytest.raises(HTTPException) as exc:
         ai.parse_rules("Watch an unsupported model under $45", db)
     assert exc.value.status_code == 422
+
+
+def test_products_omit_merchant_when_real_catalog_disabled(client, db, monkeypatch):
+    from app import config
+    record = merchant_record()
+    db.add(Product(**record))
+    db.commit()
+    monkeypatch.setenv("REAL_CATALOG_ENABLED", "false")
+    config.settings.cache_clear()
+    payload = client.get("/api/products").json()
+    assert all(p["source_kind"] != "merchant" for p in payload)
+    assert client.get("/api/session").json()["real_catalog_enabled"] is False
+    monkeypatch.setenv("REAL_CATALOG_ENABLED", "true")
+    config.settings.cache_clear()
+    enabled = client.get("/api/products").json()
+    assert any(p["id"] == record["id"] for p in enabled)
+    assert client.get("/api/session").json()["real_catalog_enabled"] is True
+    monkeypatch.setenv("REAL_CATALOG_ENABLED", "false")
+    config.settings.cache_clear()

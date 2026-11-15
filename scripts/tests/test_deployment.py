@@ -34,6 +34,7 @@ class DeploymentTests(unittest.TestCase):
             secret, config = deploy.runtime_config()
             self.assertNotIn('VULTR_API_KEY',secret)
             self.assertEqual(config['PAYMENTS_MODE'],'simulation')
+            self.assertEqual(config['REAL_CATALOG_ENABLED'], 'false')
             self.assertEqual(config['APP_DOMAIN'],'dealone.work')
         bad = {**env, "DATABASE_URL": "postgresql+psycopg://user:password@host/db?sslmode=disable"}
         with patch.dict(os.environ, bad, clear=True), self.assertRaises(RuntimeError):

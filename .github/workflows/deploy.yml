@@ -37,6 +37,10 @@ jobs:
       APP_DOMAIN: dealone.work
       RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
       RESEND_FROM_EMAIL: ${{ vars.RESEND_FROM_EMAIL }}
+      NESSIE_API_KEY: ${{ secrets.NESSIE_API_KEY }}
+      NESSIE_CUSTOMER_ID: ${{ vars.NESSIE_CUSTOMER_ID }}
+      NESSIE_CARD_ACCOUNT_ID: ${{ vars.NESSIE_CARD_ACCOUNT_ID }}
+      NESSIE_MERCHANT_ID: ${{ vars.NESSIE_MERCHANT_ID }}
     steps:
       - uses: actions/checkout@v4
         with:
