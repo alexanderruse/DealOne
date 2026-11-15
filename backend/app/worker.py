@@ -143,12 +143,10 @@ def tick():
 def main():
     settings().validate_runtime()
     from .catalog import refresh_catalog
-    last_catalog_refresh = -65.0
     while True:
         try:
-            if time.monotonic() - last_catalog_refresh >= 65:
-                last_catalog_refresh = time.monotonic()
-                refresh_catalog()
+            # The database gate enforces per-store network pacing; checking the queue is cheap.
+            refresh_catalog()
             tick()
         except Exception:
             log.exception(json.dumps({"event": "worker_tick_failed"}))

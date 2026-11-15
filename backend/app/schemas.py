@@ -46,6 +46,19 @@ class EmptyRequest(StrictModel):
     pass
 
 
+class DiscoveryRequest(StrictModel):
+    query: str = Field(min_length=2, max_length=150)
+    store: Literal["keychron", "epomaker"] = "keychron"
+
+
+class InspectRequest(StrictModel):
+    url: str = Field(min_length=10, max_length=500)
+
+
+class HistoryRequest(StrictModel):
+    product_ids: list[str] = Field(max_length=250)
+
+
 class PriceChange(StrictModel):
     price_cents: int = Field(gt=0, le=1_000_000)
     shipping_cents: int | None = Field(default=None, ge=0, le=100_000)

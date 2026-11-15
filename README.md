@@ -1,17 +1,23 @@
 # DealOne
 
-**Set your price. Stay in control.** DealOne watches real Keychron products, turns requests into reviewed permissions with Grok, and demonstrates spending controls through Capital One's Nessie sandbox.
+**Set your price. Stay in control.** DealOne discovers and watches real products at approved stores, turns requests into reviewed permissions with Grok, and demonstrates spending controls through Capital One's Nessie sandbox.
 
 ## Real products, two experiences
 
-The customer catalog contains only real products from **Keychron**, the first approved store. It reads official product feeds for the C3 Pro keyboard and M3 mouse, displays exact variants and merchant artwork, and links directly to the listing. There is no fictional DealOne store in the catalog, Grok results, or item picker. Historical records remain stored, but retired fictional permissions cannot keep purchasing.
+The approved stores are **Keychron** (`keychron.com`) and **Epomaker** (`epomaker.com`). Grok and the dashboard can search each store's public Shopify catalog or inspect a pasted product link. Discovery is not restricted to a fixed keyboard and mouse: keycaps, switches, accessories, and new model names use the same adapter.
 
-- **Merchant price watch:** monitor the actual item price and receive alerts. Complete checkout at Keychron after confirming taxes, shipping, and delivery. DealOne does not yet submit real retailer orders.
+Search returns up to six real listing previews with merchant images and **from** prices. Exact variants must be fetched before a watch is allowed; product-level availability is not treated as variant stock. The first two matches are automatically queued, and **Check variants & stock** prioritizes another match. Links are restricted to HTTPS product paths on approved hosts; redirects, arbitrary URLs, and private store APIs are not accessed. There is no fictional store in customer choices.
+
+- **Merchant price watch:** monitor the actual item price and receive alerts. Complete checkout at the approved merchant after confirming taxes, shipping, and delivery. DealOne does not yet submit real retailer orders.
 - **Nessie banking demonstration:** use the same real item with an explicitly reviewed **sandbox final total**. This is a test scenario, not a merchant offer. The worker executes controlled browser checkout, authorizes a sandbox charge, and records its bank reference. Every receipt states that no merchant order was placed.
 
-Sold-out variants cannot be requested. The backend checks the exact variant's latest verified stock snapshot when creating or activating a permission and before sandbox payment. Snapshots older than three minutes fail closed. One approved product feed is checked every 65 seconds across all replicas, normally refreshing each product roughly every 130–140 seconds; longer merchant `Retry-After` delays are honored. Feeds report availability to order rather than warehouse inventory counts. Prices are USD item prices, excluding merchant shipping and tax. Sandbox totals never overwrite merchant prices, observed history, or inventory.
+Sold-out variants cannot be requested. The backend checks the exact variant's latest verified stock snapshot when creating or activating a permission and before sandbox payment. Snapshots older than three minutes fail closed. A database-backed queue deduplicates requests across users and pods, allows one network request per store every 65 seconds, honors longer `Retry-After` delays, caches search results for ten minutes, and stops after three failed attempts until retried. Pending checks are visible and polled by the UI. Public storefronts can still throttle or be unavailable; no unlimited or instantaneous stock guarantee is made.
 
-Catalog ingestion uses HTTP JSON from Keychron's public Shopify `.js` product endpoints, not screenshots or browser scraping. All variants, including sold-out ones, remain visible. Grok commands request a rate-limited refresh, update the dashboard, and leave an Activity entry; searches do not create bank transactions. Grok can draft a watch with an explicit budget, but the user must review and activate it. Access is restricted to the two configured Keychron product URLs; a second Shopify merchant requires a specific reviewed storefront domain.
+Active watches get refresh priority (target 130 seconds when capacity permits). Unwatched products are checked less often, preserving request capacity for user searches; **Check current availability** requests a fresh exact-variant check. Many simultaneous products can exceed public-feed capacity, in which case stale stock stays blocked. Partner-authorized Storefront APIs or merchant feeds are the next step for higher throughput.
+
+Price history contains only actual DealOne observations for each merchant variant. It begins when the product is imported; there is no invented earlier history. The dashboard displays observation counts, low/high prices and dates, with one batched history request rather than a request per product. Prices are USD item prices before merchant tax and shipping; sandbox totals never overwrite merchant prices or inventory.
+
+Grok uses `discover_products`, `inspect_product`, `find_product`, `get_price_history`, `get_activity`, and reviewed purchase tools. Commands update the live dashboard and leave an Activity entry; a search never creates a bank charge. Grok can draft rules with an explicit budget, but the user must activate them. Playwright remains confined to the controlled sandbox checkout. The interface uses permanent red/black theme tokens with dark text, larger type, and mobile layout checks.
 
 ## Run locally
 
@@ -26,7 +32,7 @@ Set `XAI_API_KEY` and `XAI_MODEL` for Grok. Without credentials, manual watch cr
 
 ## Demonstration walkthrough
 
-1. Choose an available real Keychron variant. A sold-out C3 Pro cannot be selected.
+1. Search for a product at an approved store or paste its product URL. Wait for exact-variant verification; sold-out and unverified variants cannot be selected.
 2. Click **Try Nessie sandbox**, or choose **Nessie banking demonstration** in the watch dialog.
 3. Set an all-in spending maximum and a lower sandbox test total. Review both, along with the exact variant and expiration.
 4. Keep **Ask me first**, the default, and activate. A dedicated card is limited to this permission's maximum.

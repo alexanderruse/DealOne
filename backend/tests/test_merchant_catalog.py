@@ -133,27 +133,14 @@ def test_disabling_polling_never_reintroduces_fictional_products(client, db, mon
     config.settings.cache_clear()
 
 
-def test_merchant_rate_limit_honors_one_bounded_retry(monkeypatch):
+@pytest.mark.parametrize("delay", ["3", "120"])
+def test_merchant_rate_limit_defers_to_shared_queue(delay):
     import httpx
     from app import catalog
-    sleeps=[]
-    monkeypatch.setattr(catalog.time, "sleep", sleeps.append)
-    replies=iter([httpx.Response(429,headers={"Retry-After":"3"}), httpx.Response(200,json={"variants":[]})])
     calls=[]
     def transport(request):
         calls.append(str(request.url))
-        return next(replies)
+        return httpx.Response(429, headers={"Retry-After": delay})
     with httpx.Client(transport=httpx.MockTransport(transport)) as client:
-        assert catalog.fetch_feed(client,SOURCES[1][0]) == {"variants":[]}
-    assert sleeps == [3.0]
-    assert len(calls)==2 and calls[0]==calls[1]
-
-
-def test_long_merchant_backoff_never_accepts_unverified_inventory(monkeypatch):
-    import httpx
-    from app import catalog
-    from unittest.mock import Mock
-    sleep=Mock();monkeypatch.setattr(catalog.time,"sleep",sleep)
-    with httpx.Client(transport=httpx.MockTransport(lambda request:httpx.Response(429,headers={"Retry-After":"120"}))) as client:
-        with pytest.raises(httpx.HTTPStatusError):catalog.fetch_feed(client,SOURCES[1][0])
-    sleep.assert_not_called()
+        with pytest.raises(httpx.HTTPStatusError): catalog.fetch_feed(client, SOURCES[1][0])
+    assert len(calls) == 1
