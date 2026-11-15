@@ -68,7 +68,7 @@ def browser_checkout(order_id):
         context = browser.new_context(extra_http_headers={"x-worker-token": settings().worker_token})
         context.route("**/*", lambda route: route.continue_() if urlparse(route.request.url).netloc == origin else route.abort())
         page = context.new_page()
-        page.set_default_timeout(20_000)
+        page.set_default_timeout(45_000)
         response = page.goto(f"{base}/api/storefront/checkout/{order_id}")
         if not response or not response.ok:
             raise RuntimeError("Storefront checkout unavailable")

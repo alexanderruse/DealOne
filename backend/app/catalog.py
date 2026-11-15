@@ -1,5 +1,7 @@
 """Read-only merchant adapter. URLs are fixed, never supplied by a model or browser."""
 import logging
+import time
+from email.utils import parsedate_to_datetime
 from decimal import Decimal, DecimalException
 from datetime import timedelta
 from urllib.parse import urlparse
@@ -62,6 +64,27 @@ def parse_product(payload, handle, category, icon, variant_id=None):
                 image_url=image_url(variant_image), price_checked_at=utcnow())
 
 
+def fetch_feed(client, handle):
+    """Respect merchant throttling with one bounded retry of the same public feed."""
+    url = f"https://www.keychron.com/products/{handle}.js"
+    response = client.get(url, params={"currency": "USD"})
+    if response.status_code == 429:
+        retry = response.headers.get("retry-after")
+        try:
+            delay = float(retry) if retry else 2.0
+        except ValueError:
+            try:
+                delay = (parsedate_to_datetime(retry) - utcnow()).total_seconds()
+            except (TypeError, ValueError):
+                delay = 2.0
+        # Long waits defer to the next normal polling cycle rather than blocking a request.
+        if delay <= 10:
+            time.sleep(max(2.0, delay))
+            response = client.get(url, params={"currency": "USD"})
+    response.raise_for_status()
+    return response.json()
+
+
 def refresh_catalog():
     if not settings().real_catalog_enabled:
         return
@@ -72,9 +95,7 @@ def refresh_catalog():
         with httpx.Client(timeout=8, follow_redirects=False) as client:
             for handle, category, icon in SOURCES:
                 try:
-                    response = client.get(f"https://www.keychron.com/products/{handle}.js", params={"currency": "USD"})
-                    response.raise_for_status()
-                    payload = response.json()
+                    payload = fetch_feed(client, handle)
                     record = parse_product(payload, handle, category, icon)
                     # Refresh availability for previously selected variants too, including ones now sold out.
                     for old in db.scalars(select(Product).where(Product.source_url.like(f"https://www.keychron.com/products/{handle}?%"))):
@@ -131,9 +152,8 @@ def revalidate_product(db, product):
             raise ValueError("Unsupported merchant")
         try:
             with httpx.Client(timeout=8, follow_redirects=False) as client:
-                response = client.get(f"https://www.keychron.com/products/{source[0]}.js", params={"currency":"USD"})
-                response.raise_for_status()
-                record = parse_product(response.json(), *source, variant_id=product.id.removeprefix("keychron-"))
+                payload = fetch_feed(client, source[0])
+                record = parse_product(payload, *source, variant_id=product.id.removeprefix("keychron-"))
             for key, value in record.items():
                 setattr(product, key, value)
             db.flush()
