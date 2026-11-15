@@ -11,7 +11,7 @@ from sqlalchemy import text, select
 
 from .config import settings
 from .db import SessionLocal
-from .models import Product, PriceObservation, utcnow
+from .models import Product, PriceObservation, Heartbeat, utcnow
 
 SOURCES = (
     ("keychron-c3-pro-qmk-via-wired-mechanical-keyboard", "Keyboard", "keyboard"),
@@ -64,19 +64,23 @@ def parse_product(payload, handle, category, icon, variant_id=None):
                 image_url=image_url(variant_image), price_checked_at=utcnow())
 
 
+def retry_delay(response):
+    retry = response.headers.get("retry-after")
+    try:
+        return max(0, float(retry)) if retry else 2.0
+    except ValueError:
+        try:
+            return max(0, (parsedate_to_datetime(retry) - utcnow()).total_seconds())
+        except (TypeError, ValueError):
+            return 2.0
+
+
 def fetch_feed(client, handle):
     """Respect merchant throttling with one bounded retry of the same public feed."""
     url = f"https://www.keychron.com/products/{handle}.js"
     response = client.get(url, params={"currency": "USD"})
     if response.status_code == 429:
-        retry = response.headers.get("retry-after")
-        try:
-            delay = float(retry) if retry else 2.0
-        except ValueError:
-            try:
-                delay = (parsedate_to_datetime(retry) - utcnow()).total_seconds()
-            except (TypeError, ValueError):
-                delay = 2.0
+        delay = retry_delay(response)
         # Long waits defer to the next normal polling cycle rather than blocking a request.
         if delay <= 10:
             time.sleep(max(2.0, delay))
@@ -86,37 +90,52 @@ def fetch_feed(client, handle):
 
 
 def refresh_catalog():
+    """One approved feed per 65 seconds across all replicas; alternate sources fairly."""
     if not settings().real_catalog_enabled:
-        return
-    # A shared lock prevents API/worker replicas polling the merchant concurrently.
+        return {"status": "disabled", "message": "Merchant polling is disabled"}
     with SessionLocal.begin() as db:
         if not db.scalar(text("SELECT pg_try_advisory_xact_lock(39410421)")):
-            return
-        with httpx.Client(timeout=8, follow_redirects=False) as client:
-            for handle, category, icon in SOURCES:
-                try:
-                    payload = fetch_feed(client, handle)
-                    record = parse_product(payload, handle, category, icon)
-                    # Refresh availability for previously selected variants too, including ones now sold out.
-                    for old in db.scalars(select(Product).where(Product.source_url.like(f"https://www.keychron.com/products/{handle}?%"))):
-                        try:
-                            updated = parse_product(payload, handle, category, icon, old.id.removeprefix("keychron-"))
-                            for key, value in updated.items():
-                                setattr(old, key, value)
-                        except ValueError:
-                            old.stock_status = "sold_out"
-                            old.stock = 0
-                    existing = db.get(Product, record["id"])
-                    if existing:
-                        for key, value in record.items():
-                            setattr(existing, key, value)
-                    else:
-                        db.add(Product(**record))
-                    db.add(PriceObservation(product_id=record["id"], price_cents=record["price_cents"],
-                                            total_cents=record["price_cents"]))
-                except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError, DecimalException, OverflowError):
-                    # Keep the last checked value and timestamp. Never fabricate a fresh observation.
-                    log.warning("Merchant refresh unavailable for %s", handle)
+            return {"status": "busy", "message": "A merchant check is already running"}
+        now = utcnow()
+        gate = db.get(Heartbeat, "catalog:gate")
+        if gate and gate.updated_at + timedelta(seconds=65) > now:
+            return {"status": "scheduled", "next_refresh_at": (gate.updated_at + timedelta(seconds=65)).isoformat(),
+                    "message": "Showing the latest verified inventory while respecting the merchant rate limit"}
+        choices = []
+        for index, source in reversed(list(enumerate(SOURCES))):
+            attempt = db.get(Heartbeat, f"catalog:{index}")
+            choices.append((attempt.updated_at if attempt else now-timedelta(days=36500), index, source))
+        _, index, source = min(choices, key=lambda row: row[0])
+        handle, category, icon = source
+        db.merge(Heartbeat(id="catalog:gate", updated_at=now))
+        db.merge(Heartbeat(id=f"catalog:{index}", updated_at=now))
+        try:
+            with httpx.Client(timeout=8, follow_redirects=False) as client:
+                payload = fetch_feed(client, handle)
+            available_ids = set()
+            variants = payload.get("product", payload)["variants"]
+            for variant in variants[:20]:
+                record = parse_product(payload, *source, variant_id=variant["id"])
+                available_ids.add(record["id"])
+                existing = db.get(Product, record["id"])
+                if existing:
+                    for key, value in record.items(): setattr(existing, key, value)
+                else:
+                    db.add(Product(**record))
+                db.add(PriceObservation(product_id=record["id"], price_cents=record["price_cents"], total_cents=record["price_cents"]))
+            for old in db.scalars(select(Product).where(Product.source_url.like(f"https://www.keychron.com/products/{handle}?%"))):
+                if old.id not in available_ids:
+                    old.stock_status = "sold_out"; old.stock = 0
+            return {"status": "updated", "source": handle, "checked_at": now.isoformat(),
+                    "message": f"Updated {len(available_ids)} real variants from Keychron's Shopify feed"}
+        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError, DecimalException, OverflowError) as exc:
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+                # Store a longer Retry-After in the shared gate, including across restarts.
+                delay = retry_delay(exc.response)
+                db.merge(Heartbeat(id="catalog:gate", updated_at=utcnow() + timedelta(seconds=max(0, delay - 65))))
+            log.warning("Merchant refresh unavailable for %s", handle)
+            return {"status": "unavailable", "source": handle,
+                    "message": "The merchant did not confirm a new observation. Previous timestamps are retained"}
 
 
 def public_products(db):
@@ -127,7 +146,7 @@ def public_products(db):
 def requestable(product):
     return bool(product and product.source_kind == "merchant" and product.stock_status == "in_stock"
                 and product.stock > 0 and product.price_checked_at
-                and product.price_checked_at > utcnow() - timedelta(minutes=15))
+                and product.price_checked_at > utcnow() - timedelta(seconds=180))
 
 
 def ensure_requestable(product):
@@ -145,18 +164,6 @@ def revalidate_product(db, product):
         if settings().app_env == "test":
             return  # Unit-test fixtures are never exposed by the public catalog.
         raise ValueError("This legacy demonstration item is no longer supported")
-    if settings().app_env != "test":
-        source = next((row for row in SOURCES if product.source_url and product.source_url.startswith(
-            f"https://www.keychron.com/products/{row[0]}?variant=")), None)
-        if source is None:
-            raise ValueError("Unsupported merchant")
-        try:
-            with httpx.Client(timeout=8, follow_redirects=False) as client:
-                payload = fetch_feed(client, source[0])
-                record = parse_product(payload, *source, variant_id=product.id.removeprefix("keychron-"))
-            for key, value in record.items():
-                setattr(product, key, value)
-            db.flush()
-        except (httpx.HTTPError, ValueError, KeyError, TypeError, IndexError, DecimalException):
-            raise ValueError("The merchant could not confirm availability. No purchase request was accepted") from None
+    # A verified snapshot avoids turning every UI command into a throttled merchant request.
+    # The worker refreshes each supported product about every 130 seconds. Older data fails closed.
     ensure_requestable(product)

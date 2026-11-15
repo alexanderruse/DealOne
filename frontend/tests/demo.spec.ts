@@ -69,6 +69,35 @@ test('assistant matches are actionable real products',async({page})=>{
   await expect(page.getByRole('dialog')).toContainText('Keychron M3');
 });
 
+test('start watch explains unavailable stock and preview badge is removed',async({page})=>{
+  await page.route('**/api/products',async route=>{
+    const response=await route.fetch();
+    const products=await response.json();
+    await route.fulfill({json:products.map((p:object)=>({...p,can_request:false,stock_status:'sold_out',stock:0}))});
+  });
+  await page.goto('/');
+  await expect(page.getByText('HACKATHON PREVIEW',{exact:false})).toHaveCount(0);
+  await page.getByRole('button',{name:'Start a watch',exact:true}).click();
+  const picker=page.getByRole('dialog');
+  await expect(picker).toContainText('No recently verified, available variants');
+  await expect(picker.getByRole('button',{name:'Watch this item'}).first()).toBeDisabled();
+  await expect(picker.getByRole('button',{name:'Check merchant availability'})).toBeEnabled();
+});
+
+test('Grok results keep sold-out variants visible and disabled',async({page})=>{
+  await page.route('**/api/session',route=>route.fulfill({json:{grok_configured:true,payments:'simulation'}}));
+  await page.route('**/api/assistant',route=>route.fulfill({json:{message:'Available and sold-out variants.',
+    tools:[{tool:'find_product',result:[{id:mouseId},{id:'keychron-40574854037593'}]}]}}));
+  await page.goto('/');
+  await page.getByRole('button',{name:'Grok assistant',exact:true}).click();
+  await page.getByLabel('Your message').fill('Show all Keychron stock states');
+  await page.getByRole('button',{name:'Ask Grok',exact:true}).click();
+  const matches=page.getByLabel('Grok product matches');
+  await expect(matches.locator('.grok-product')).toHaveCount(2);
+  await expect(matches.locator('.grok-product').filter({hasText:'C3 Pro'}).getByRole('button')).toBeDisabled();
+  await expect(matches.locator('.grok-product').filter({hasText:'M3'}).getByRole('button')).toBeEnabled();
+});
+
 test('mobile and desktop real catalog fit without browser errors',async({page})=>{
   const errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));
   await page.setViewportSize({width:390,height:844});await page.goto('/');

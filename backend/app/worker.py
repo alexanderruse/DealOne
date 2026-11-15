@@ -37,7 +37,7 @@ def scan():
                     continue
                 product = db.get(Product, permission.product_id)
                 if product.source_kind == "merchant" and permission.checkout_mode != "sandbox":
-                    if product.stock_status == "in_stock" and product.stock > 0 and product.price_checked_at and product.price_checked_at > utcnow() - timedelta(minutes=15) and product.price_cents <= permission.max_total_cents:
+                    if product.stock_status == "in_stock" and product.stock > 0 and product.price_checked_at and product.price_checked_at > utcnow() - timedelta(seconds=180) and product.price_cents <= permission.max_total_cents:
                         notify(db, permission.owner, f"merchant:{permission.id}:{product.price_cents}",
                                f"Price alert: {product.name} is ${product.price_cents/100:.2f} at {product.seller}. Tax, shipping and availability need confirmation at the store. Open the listing to review.")
                     continue
@@ -143,10 +143,10 @@ def tick():
 def main():
     settings().validate_runtime()
     from .catalog import refresh_catalog
-    last_catalog_refresh = -300.0
+    last_catalog_refresh = -65.0
     while True:
         try:
-            if time.monotonic() - last_catalog_refresh >= 300:
+            if time.monotonic() - last_catalog_refresh >= 65:
                 last_catalog_refresh = time.monotonic()
                 refresh_catalog()
             tick()
