@@ -79,6 +79,8 @@ def main():
     def capture_comparison(page, **kwargs):
         if "clip" in kwargs:
             return screenshot(page, path=str(output / 'payment-close-up.png'), **kwargs)
+        if "path" not in kwargs:
+            return screenshot(page, **kwargs)
         frames = []
         painted = []
         for frame in page.frames:
