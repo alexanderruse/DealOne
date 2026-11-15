@@ -102,7 +102,12 @@ def worker_health(db: Session = Depends(get_db)):
 
 @app.get("/api/session")
 def session(user: str = Depends(owner)):
-    return {"session_id": user, "grok_configured": bool(settings().xai_api_key), "payments": settings().payments_mode}
+    return {
+        "session_id": user,
+        "grok_configured": bool(settings().xai_api_key),
+        "payments": settings().payments_mode,
+        "real_catalog_enabled": settings().real_catalog_enabled,
+    }
 
 
 @app.get("/api/payments/card")
@@ -154,7 +159,10 @@ def payment_ledger(user: str = Depends(owner), db: Session = Depends(get_db)):
 
 @app.get("/api/products")
 def products(db: Session = Depends(get_db)):
-    return [product_view(p) for p in db.scalars(select(Product).order_by(Product.id))]
+    rows = list(db.scalars(select(Product).order_by(Product.id)))
+    if not settings().real_catalog_enabled:
+        rows = [p for p in rows if p.source_kind != "merchant"]
+    return [product_view(p) for p in rows]
 
 
 @app.get("/api/products/{product_id}/prices")

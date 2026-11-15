@@ -120,6 +120,7 @@ function App() {
   const [error, setError] = useState('');
   const [grok, setGrok] = useState(false);
   const [payments, setPayments] = useState('simulation');
+  const [realCatalogEnabled, setRealCatalogEnabled] = useState(false);
   const [cardSummary, setCardSummary] = useState<CardSummary | null>(null);
   const [ledger, setLedger] = useState<Ledger>({ charges: [], nessie: [] });
   const [loading, setLoading] = useState(true);
@@ -171,11 +172,13 @@ function App() {
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setInterval>;
-    api<{ grok_configured: boolean; payments: string }>('/session')
+    api<{ grok_configured: boolean; payments: string; real_catalog_enabled?: boolean }>('/session')
       .then(async (s) => {
         if (!active) return;
         setGrok(s.grok_configured);
         setPayments(s.payments);
+        setRealCatalogEnabled(Boolean(s.real_catalog_enabled));
+        if (!s.real_catalog_enabled) setCatalogMode('demo');
         await refresh();
         timer = setInterval(() => {
           refresh().catch(() => {});
@@ -546,18 +549,22 @@ function App() {
                     </div>
                   )}
                   <div className="catalog-controls">
-                    <div className="catalog-tabs" aria-label="Product source">
-                      <button aria-pressed={catalogMode === 'merchant'} onClick={() => setCatalogMode('merchant')}>Real stores</button>
-                      <button aria-pressed={catalogMode === 'demo'} onClick={() => setCatalogMode('demo')}>Practice checkout</button>
-                    </div>
+                    {realCatalogEnabled && (
+                      <div className="catalog-tabs" aria-label="Product source">
+                        <button aria-pressed={catalogMode === 'merchant'} onClick={() => setCatalogMode('merchant')}>Real stores</button>
+                        <button aria-pressed={catalogMode === 'demo'} onClick={() => setCatalogMode('demo')}>Practice checkout</button>
+                      </div>
+                    )}
                     <label className="catalog-search">Find an item
-                      <input aria-label="Find an item" placeholder="Keyboard, mouse, Keychron…" value={catalogQuery} onChange={(e) => setCatalogQuery(e.target.value)} />
+                      <input aria-label="Find an item" placeholder="Headphones, keyboard, speaker…" value={catalogQuery} onChange={(e) => setCatalogQuery(e.target.value)} />
                     </label>
                   </div>
-                  <p className="catalog-disclosure">{catalogMode === 'merchant'
+                  <p className="catalog-disclosure">{catalogMode === 'merchant' && realCatalogEnabled
                     ? 'Real Keychron listings. Prices refresh every 5 minutes. Tax, shipping and stock need confirmation at the merchant. Checkout opens at the store.'
-                    : 'Practice products and payments are simulated. Use this catalog to try the complete automatic checkout flow.'}</p>
-                  {visibleProducts.length === 0 && <div className="empty"><Package /><h3>{catalogQuery ? 'No matching items yet.' : 'Waiting for merchant prices.'}</h3><p>{catalogQuery ? 'Try another product name or ask Grok about the supported catalog.' : 'Merchant data may be temporarily unavailable. You can still try Practice checkout.'}</p></div>}
+                    : payments === 'nessie'
+                      ? 'Practice catalog with Nessie sandbox settlement. Charges are sandbox-only — never real money.'
+                      : 'Practice products and payments are simulated. Use this catalog to try the complete automatic checkout flow.'}</p>
+                  {visibleProducts.length === 0 && <div className="empty"><Package /><h3>{catalogQuery ? 'No matching items yet.' : realCatalogEnabled ? 'Waiting for merchant prices.' : 'No practice products yet.'}</h3><p>{catalogQuery ? 'Try another product name or ask Grok about the supported catalog.' : realCatalogEnabled ? 'Merchant data may be temporarily unavailable. You can still try Practice checkout.' : 'Demo products load from the practice storefront.'}</p></div>}
                   <section className="product-grid">
                     {visibleProducts.map((p) => {
                       const history = histories[p.id] || [];
@@ -607,7 +614,7 @@ function App() {
                                 <polyline
                                   points={points}
                                   fill="none"
-                                  stroke="#0070a8"
+                                  stroke="#0f766e"
                                   strokeWidth="2"
                                   vectorEffect="non-scaling-stroke"
                                 />
@@ -799,8 +806,10 @@ function App() {
                   </div>}
                   <p className="fineprint">
                     Grok can request purchases only under rules you have already activated. Product
-                    text is never treated as instructions — try the USB-C Hub demo item. Payments in
-                    this preview are simulated.
+                    text is never treated as instructions — try the USB-C Hub demo item.{' '}
+                    {payments === 'nessie'
+                      ? 'Payments settle against the Nessie sandbox — never real money.'
+                      : 'Payments in this preview are simulated.'}
                   </p>
                 </section>
               )}
@@ -808,9 +817,14 @@ function App() {
           )}
           <footer>
             <span>DealOne © {new Date().getFullYear()}</span>
-            <span>Independent hackathon project · Capital One–inspired design</span>
+            <span>Independent hackathon project · Not affiliated with Capital One</span>
             <span>Grok × Tiger Data × Vultr</span>
           </footer>
+          <p className="legal-disclaimer">
+            DealOne is an independent student/hackathon project. It is not a product of Capital One
+            and is not affiliated with, endorsed by, or sponsored by Capital One Financial Corporation
+            or its affiliates. Nessie, when enabled, is used only as a public sandbox API.
+          </p>
         </main>
       </div>
 

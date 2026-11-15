@@ -3,18 +3,18 @@
 @tailwind utilities;
 
 :root {
-  --brand-navy: #004977;
-  --brand-navy-deep: #002e51;
-  --brand-blue: #0070a8;
-  --brand-red: #d03027;
-  --brand-red-dark: #a8241d;
-  --ink: #16324f;
-  --muted: #5b7390;
-  --line: #d5e3f0;
+  --brand-navy: #1e293b;
+  --brand-navy-deep: #0f172a;
+  --brand-blue: #0f766e;
+  --brand-red: #0f766e;
+  --brand-red-dark: #0d5f59;
+  --ink: #1e293b;
+  --muted: #64748b;
+  --line: #d8e0ea;
   --surface: #ffffff;
-  --canvas: #f3f7fb;
-  --panel: #eaf2fa;
-  font-family: Barlow, 'Trebuchet MS', 'Segoe UI', sans-serif;
+  --canvas: #f1f5f9;
+  --panel: #e8eef5;
+  font-family: "Source Sans 3", "Segoe UI", sans-serif;
   color: var(--ink);
   background: var(--canvas);
   background-attachment: fixed;
@@ -179,8 +179,8 @@ p {
   padding-top: 30px;
 }
 .autopilot {
-  background: linear-gradient(160deg, #004977 0%, #003459 100%);
-  border: 1px solid #002e51;
+  background: linear-gradient(160deg, #1e293b 0%, #0f172a 100%);
+  border: 1px solid var(--brand-navy-deep);
   border-radius: 10px;
   padding: 18px 14px;
   margin-bottom: 15px;
@@ -335,7 +335,7 @@ main {
   text-transform: uppercase;
 }
 h1 {
-  font-family: Barlow, 'Trebuchet MS', sans-serif;
+  font-family: "Source Sans 3", "Segoe UI", sans-serif;
   font-weight: 800;
   font-size: 36px;
   letter-spacing: -0.7px;
@@ -395,7 +395,7 @@ h1 {
   overflow: hidden;
   border-radius: 0;
   background:
-    linear-gradient(115deg, #002e51 0%, #004977 52%, #0070a8 100%);
+    linear-gradient(115deg, #0f172a 0%, #1e293b 52%, #0f766e 100%);
   border: 0;
   border-bottom: 4px solid var(--brand-red);
   position: relative;
@@ -417,7 +417,7 @@ h1 {
   font-weight: 700;
 }
 .hero h2 {
-  font-family: Barlow, 'Trebuchet MS', sans-serif;
+  font-family: "Source Sans 3", "Segoe UI", sans-serif;
   color: #fff;
   font-weight: 800;
   letter-spacing: -0.8px;
@@ -470,7 +470,7 @@ h1 {
   width: 280px;
   height: 168px;
   background:
-    linear-gradient(160deg, #003459 0%, #004977 55%, #002e51 100%);
+    linear-gradient(160deg, #334155 0%, #1e293b 55%, #0f172a 100%);
   color: #fff;
   border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: 10px;
@@ -588,7 +588,7 @@ h1 {
   font-weight: 800;
   display: block;
   margin-top: 5px;
-  font-family: Barlow, "Trebuchet MS", sans-serif;
+  font-family: "Source Sans 3", "Segoe UI", sans-serif;
 }
 .stats small {
   font-size: 9px;
@@ -608,7 +608,7 @@ h1 {
   font-weight: 800;
   letter-spacing: -0.4px;
   color: var(--brand-navy);
-  font-family: Barlow, "Trebuchet MS", sans-serif;
+  font-family: "Source Sans 3", "Segoe UI", sans-serif;
 }
 .section-heading h2 span {
   background: var(--panel);
@@ -742,7 +742,7 @@ h1 {
   font-size: 20px;
   font-weight: 550;
   letter-spacing: -0.6px;
-  color: #004977;
+  color: var(--brand-navy);
 }
 .price del {
   font-size: 10px;
@@ -796,7 +796,15 @@ footer {
   justify-content: space-between;
   color: var(--muted);
   font-size: 8px;
-  padding: 19px 0 23px;
+  padding: 19px 0 12px;
+}
+.legal-disclaimer {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--muted);
+  max-width: 72ch;
+  margin: 0 0 28px;
+  padding-bottom: 8px;
 }
 .error {
   display: flex;
@@ -851,7 +859,7 @@ footer {
   color: var(--muted);
 }
 .empty h3 {
-  font-family: Barlow, 'Trebuchet MS', sans-serif;
+  font-family: "Source Sans 3", "Segoe UI", sans-serif;
   color: var(--muted);
   font-weight: 400;
   font-size: 23px;
@@ -1032,7 +1040,7 @@ footer {
   color: var(--muted);
 }
 .assistant-panel h2 {
-  font-family: Barlow, 'Trebuchet MS', sans-serif;
+  font-family: "Source Sans 3", "Segoe UI", sans-serif;
   font-weight: 400;
   font-size: 28px;
 }
@@ -1105,7 +1113,7 @@ footer {
   margin-bottom: 14px;
 }
 .modal h2 {
-  font-family: Barlow, 'Trebuchet MS', sans-serif;
+  font-family: "Source Sans 3", "Segoe UI", sans-serif;
   font-weight: 400;
   font-size: 29px;
   letter-spacing: -0.6px;
@@ -1130,7 +1138,7 @@ textarea,
 select {
   font-family: inherit;
   font-size: 13px;
-  color: #004977;
+  color: var(--brand-navy);
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 7px;
@@ -1763,7 +1771,7 @@ textarea::placeholder {
   }
 }
 
-/* Capital One visual language — cohesive overrides */
+/* DealOne neutral surface language */
 .eyebrow { color: var(--brand-red); letter-spacing: 1.8px; font-weight: 700; }
 .page-title p, .breadcrumb, .muted, .fineprint { color: var(--muted); }
 .workspace, .product-card, .panel, .watch-list, .modal, .receipt, .notice, .agent-answer {

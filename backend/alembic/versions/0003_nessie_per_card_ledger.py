@@ -6,6 +6,25 @@ down_revision = "0002"
 
 
 def upgrade():
+    # Idempotent prerequisites: older installs may have been stamped at the
+    # pre-merge "0002" merchant revision without the permission-card branch.
+    op.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''")
+    op.execute(
+        "ALTER TABLE permissions ADD COLUMN IF NOT EXISTS purchase_mode VARCHAR(20) NOT NULL DEFAULT 'ask_first'"
+    )
+    op.execute(
+        """
+        CREATE TABLE IF NOT EXISTS virtual_cards (
+            permission_id VARCHAR(36) NOT NULL,
+            last4 VARCHAR(4) NOT NULL,
+            limit_cents INTEGER NOT NULL,
+            status VARCHAR(20) NOT NULL,
+            created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+            PRIMARY KEY (permission_id),
+            FOREIGN KEY(permission_id) REFERENCES permissions (id)
+        )
+        """
+    )
     op.execute(
         "ALTER TABLE virtual_cards ADD COLUMN IF NOT EXISTS nessie_account_id VARCHAR(64)"
     )

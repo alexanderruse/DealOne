@@ -66,8 +66,9 @@ test('desktop overview renders without browser errors', async ({ page }) => {
   page.on('pageerror', (error) => errors.push(error.message));
   await page.setViewportSize({ width: 1440, height: 1050 });
   await page.goto('/');
-  await page.getByRole('button', { name: 'Practice checkout', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Real stores', exact: true })).toHaveCount(0);
   await expect(page.locator('.product-card')).toHaveCount(4);
+  await expect(page.getByText('Not affiliated with Capital One', { exact: false })).toBeVisible();
   await page.screenshot({ path: 'test-results/dealone-desktop.png', fullPage: true });
   expect(errors).toEqual([]);
 });
@@ -81,7 +82,9 @@ test('Grok changes the selected product artwork and real watches explain merchan
     const response = await route.fetch();
     await route.fulfill({ json: [...(await response.json()).filter((p: {source_kind?: string}) => p.source_kind !== 'merchant'), product] });
   });
-  await page.route('**/api/session', route => route.fulfill({ json: { grok_configured: true } }));
+  await page.route('**/api/session', route => route.fulfill({
+    json: { grok_configured: true, payments: 'simulation', real_catalog_enabled: true },
+  }));
   await page.route('**/api/rules/parse', route => route.fulfill({ json: { product_id: product.id,
     max_total_cents: 4500, quantity: 1, expires_at: new Date(Date.now() + 86400000).toISOString() } }));
   await page.goto('/');
