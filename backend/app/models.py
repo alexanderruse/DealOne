@@ -173,6 +173,7 @@ class CheckoutDemoRun(Base):
     fields_completed: Mapped[str] = mapped_column(Text, default="[]")  # JSON encoded list of completed fields
     screenshot_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     screenshot_png: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True, deferred=True)
+    payment_screenshot_png: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True, deferred=True)
     is_submitted: Mapped[bool] = mapped_column(Boolean, default=False)  # strictly False
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -184,7 +185,7 @@ class CatalogTask(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     store: Mapped[str] = mapped_column(String(30), index=True)
     kind: Mapped[str] = mapped_column(String(20))
-    target: Mapped[str] = mapped_column(String(200))
+    target: Mapped[str] = mapped_column(String(500))
     status: Mapped[str] = mapped_column(String(20), default="queued")
     priority: Mapped[int] = mapped_column(Integer, default=100)
     attempts: Mapped[int] = mapped_column(Integer, default=0)

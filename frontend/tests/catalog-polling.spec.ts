@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-test('large catalogs batch only visible histories and preserve evidence on transient errors', async ({ page }) => {
+test('large catalogs batch only watched histories and preserve evidence on transient errors', async ({ page }) => {
   const products = Array.from({ length: 500 }, (_, index) => ({
     id: `keyboard-${index}`, name: `Keyboard ${index}`, variant: 'Black', category: 'Keyboard',
     seller: 'Keychron', source_kind: 'merchant', price_cents: 5000, original_cents: 5000,
@@ -33,14 +33,17 @@ test('large catalogs batch only visible histories and preserve evidence on trans
     }
     const data = path === '/api/session' ? { ai_configured: true, payments: 'simulation' }
       : path === '/api/products' ? products
+      : path === '/api/permissions' ? products.slice(0, 2).map((product) => ({ id: product.id, product_id: product.id, status: 'active', max_total_cents: 5000, product }))
       : path === '/api/payments/ledger' ? { charges: [], nessie: [] }
       : path === '/api/payments/card' || path === '/api/ai/budget' ? null : [];
     await route.fulfill({ json: data });
   });
   await page.goto('/');
-  await expect(page.locator('.product-card')).toHaveCount(24);
+  await expect(page.locator('.product-card')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Watchlist', exact: true }).click();
+  await expect(page.locator('.watch-row')).toHaveCount(2);
   await expect.poll(() => historyBatches.length).toBe(1);
-  expect(historyBatches[0]).toEqual(products.slice(0, 24).map((product) => product.id));
+  expect(historyBatches[0]).toEqual(products.slice(0, 2).map((product) => product.id));
   expect(legacyHistoryRequests).toBe(0);
   await page.getByRole('button', { name: 'Evidence Gallery', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Keyboard proof' })).toBeVisible();
