@@ -605,14 +605,21 @@ def activity_checkout_runs(user: str = Depends(owner), db: Session = Depends(get
 
 
 @app.get("/api/demo/checkout-demos")
-def list_checkout_demos(user: str = Depends(owner), db: Session = Depends(get_db)):
-    return checkout_run_views(db, user)
+def list_checkout_demos(request: Request, user: str = Depends(owner), db: Session = Depends(get_db)):
+    is_admin = bool(request.headers.get("x-demo-admin-token"))
+    if is_admin:
+        admin(request)
+    return checkout_run_views(db, user, is_admin=is_admin)
 
 
 @app.delete("/api/demo/checkout-demos/{demo_id}")
-def delete_checkout_demo(demo_id: str, user: str = Depends(owner), db: Session = Depends(get_db)):
-    demo = db.scalar(select(CheckoutDemoRun).where(
-        CheckoutDemoRun.id == demo_id, CheckoutDemoRun.owner == user).with_for_update())
+def delete_checkout_demo(demo_id: str, request: Request, user: str = Depends(owner), db: Session = Depends(get_db)):
+    query = select(CheckoutDemoRun).where(CheckoutDemoRun.id == demo_id)
+    if request.headers.get("x-demo-admin-token"):
+        admin(request)
+    else:
+        query = query.where(CheckoutDemoRun.owner == user)
+    demo = db.scalar(query.with_for_update())
     if not demo:
         raise HTTPException(404, "Checkout run not found")
     if demo.status in ("queued", "running"):
@@ -624,7 +631,7 @@ def delete_checkout_demo(demo_id: str, user: str = Depends(owner), db: Session =
     return {"deleted": True}
 
 
-def checkout_run_views(db, user, *, owned_only=False):
+def checkout_run_views(db, user, *, owned_only=False, is_admin=False):
     query = select(CheckoutDemoRun, CheckoutDemoRun.screenshot_png.is_not(None),
                    CheckoutDemoRun.payment_screenshot_png.is_not(None))
     if owned_only:
@@ -650,7 +657,7 @@ def checkout_run_views(db, user, *, owned_only=False):
             "card_last4": card.last4 if card else None,
             "has_screenshot": has_screenshot,
             "has_payment_screenshot": stored_payment,
-            "can_delete": r.owner == user and r.status not in ("queued", "running"),
+            "can_delete": (is_admin or r.owner == user) and r.status not in ("queued", "running"),
             "fields_completed": fields,
         })
     return results

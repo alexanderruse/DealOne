@@ -193,6 +193,7 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminToken, setAdminToken] = useState('');
+  const [manageCheckoutRuns, setManageCheckoutRuns] = useState(false);
   const [demoCredit, setDemoCredit] = useState('1');
   const [demoCardPermission, setDemoCardPermission] = useState('');
   const nessieCards = watches.filter((w) => w.card?.nessie_account_id);
@@ -315,7 +316,10 @@ function App() {
   function deleteRun(demo: CheckoutDemoRun) {
     if (!window.confirm('Delete this checkout run and its screenshots?')) return;
     void run(async () => {
-      await api(`/demo/checkout-demos/${demo.id}`, { method: 'DELETE' });
+      await api(`/demo/checkout-demos/${demo.id}`, {
+        method: 'DELETE',
+        headers: manageCheckoutRuns ? { 'x-demo-admin-token': adminToken.trim() } : undefined,
+      });
       setCheckoutDemos((rows) => rows.filter((row) => row.id !== demo.id));
       setCheckoutRuns((rows) => rows.filter((row) => row.id !== demo.id));
     });
@@ -792,7 +796,8 @@ function App() {
                                 <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '2px' }}>Card: •••• {demo.card_last4 || '4242'}</div>
                                 <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>{new Date(demo.created_at).toLocaleString()}</div>
                               </div>
-                              {demo.can_delete && <RemoveButton label="Delete checkout run" disabled={busy} onClick={() => deleteRun(demo)} />}
+                              {(demo.can_delete || (manageCheckoutRuns && !['queued', 'running'].includes(demo.status))) &&
+                                <RemoveButton label="Delete checkout run" disabled={busy} onClick={() => deleteRun(demo)} />}
                             </div>
                             {demo.cart_total_cents != null && (
                               <p className="muted">Verified cart total {money(demo.cart_total_cents)} · {demo.cart_discount_cents == null
@@ -1093,7 +1098,10 @@ function App() {
             <h2 id="demo-title">Demo controls</h2>
             <p>Real product details come from approved merchants. Use the sandbox experience on an eligible real item to demonstrate card limits and transactions.</p>
             <label htmlFor="admin-token">Demo administrator token</label>
-            <input id="admin-token" type="password" value={adminToken} onChange={(e) => setAdminToken(e.target.value)} autoComplete="off" />
+            <input id="admin-token" type="password" value={adminToken} disabled={busy} onChange={(e) => {
+              setAdminToken(e.target.value);
+              setManageCheckoutRuns(false);
+            }} autoComplete="off" />
 
             {adminToken && (
               <>
@@ -1234,12 +1242,21 @@ function App() {
                     </Button>
                     <Button
                       variant="outline"
-                      onClick={() => {
-                        setPage('Checkout Runs');
-                        setAdminOpen(false);
-                      }}
+                      disabled={busy}
+                      onClick={() => void run(async () => {
+                        try {
+                          await api('/demo/checkout-demos', {
+                            headers: { 'x-demo-admin-token': adminToken.trim() },
+                          });
+                          setManageCheckoutRuns(true);
+                          setPage('Checkout Runs');
+                          setAdminOpen(false);
+                        } catch (cause) {
+                          setDemoStatusMsg((cause as Error).message);
+                        }
+                      })}
                     >
-                      View Checkout Runs
+                      Manage Checkout Runs
                     </Button>
                   </div>
                   {demoStatusMsg && (
