@@ -209,7 +209,15 @@ def test_checkout_demo_queue_and_safeguards(client, db, factory, tmp_path, monke
     assert res.status_code == 200
     assert "Checkout Runs" in res.text
     assert "NOT SUBMITTED" in res.text
-    assert client.delete(f"/api/demo/checkout-demos/{demo_run['id']}").status_code == 200
+    from fastapi.testclient import TestClient
+
+    deletion_url = f"/api/demo/checkout-demos/{demo_run['id']}"
+    with TestClient(client.app) as other_session:
+        assert not other_session.get("/api/demo/checkout-demos").json()[0]["can_delete"]
+        assert other_session.delete(deletion_url).status_code == 404
+        assert other_session.delete(deletion_url, headers={"x-demo-admin-token": "wrong-token"}).status_code == 403
+        assert other_session.get("/api/demo/checkout-demos", headers=admin_headers).json()[0]["can_delete"]
+        assert other_session.delete(deletion_url, headers=admin_headers).status_code == 200
     assert client.get(f"/api/screenshots/{demo_run['id']}").status_code == 404
     body = {"permission_id": permission.id}
     with patch("app.worker.run_checkout_demo") as run_demo:
