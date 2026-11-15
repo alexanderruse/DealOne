@@ -8,13 +8,13 @@ test('watch, authorize, detect a drop, and buy exactly once', async ({ page, req
   });
   await page.goto('/');
   await expect(
-    page.getByRole('heading', { name: 'Good things come to those who watch.' }),
+    page.getByRole('heading', { name: 'Set your price. Stay in control.' }),
   ).toBeVisible();
   await page.getByRole('button', { name: 'Practice checkout', exact: true }).click();
   await page.getByRole('button', { name: 'Watch this item' }).first().click();
   await page.getByLabel('Maximum total, including tax & shipping (USD)').fill('180');
   await page.getByRole('button', { name: 'Review purchase rules' }).click();
-  await expect(page.getByRole('heading', { name: 'Your rules. Your call.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Confirm your purchase rules' })).toBeVisible();
   await page.getByLabel('Buy automatically').check();
   await page.getByRole('button', { name: 'Activate automatic purchase' }).click();
   await expect(
@@ -48,13 +48,13 @@ test('mobile overview fits viewport and Grok configuration is honest', async ({ 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
   await expect(
-    page.getByRole('heading', { name: 'Good things come to those who watch.' }),
+    page.getByRole('heading', { name: 'Set your price. Stay in control.' }),
   ).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await page.screenshot({ path: 'test-results/dealone-mobile.png', fullPage: true });
   await page.getByRole('button', { name: 'Grok assistant', exact: true }).click();
   await expect(
-    page.getByRole('heading', { name: 'A good deal starts with a conversation.' }),
+    page.getByRole('heading', { name: 'Tell Grok what you’re shopping for' }),
   ).toBeVisible();
   await expect(
     page.getByText('Payments in this preview are simulated.', { exact: false }),

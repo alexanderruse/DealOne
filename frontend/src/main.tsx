@@ -48,6 +48,12 @@ type Product = {
   image_url: string | null;
   icon: string;
   price_checked_at: string | null;
+  contains_hidden_instructions?: boolean;
+};
+type PermissionCard = {
+  last4: string;
+  limit_cents: number;
+  nessie_account_id?: string | null;
 };
 type Permission = {
   id: string;
@@ -108,7 +114,7 @@ function App() {
   const [notices, setNotices] = useState<Notice[]>([]);
   const [histories, setHistories] = useState<Record<string, Observation[]>>({});
   const [page, setPage] = useState('Overview');
-  const [catalogMode, setCatalogMode] = useState<'merchant' | 'demo'>('merchant');
+  const [catalogMode, setCatalogMode] = useState<'merchant' | 'demo'>('demo');
   const [catalogQuery, setCatalogQuery] = useState('');
   const [recommendations, setRecommendations] = useState<string[]>([]);
   const [error, setError] = useState('');
@@ -237,11 +243,11 @@ function App() {
         <div className="workspace">
           <span className="workspace-avatar">D</span>
           <div>
-            Personal workspace<small>Your next good deal</small>
+            Personal account<small>Price watches &amp; limits</small>
           </div>
           <ChevronRight size={15} />
         </div>
-        <span className="nav-label">YOUR SPACE</span>
+        <span className="nav-label">ACCOUNT</span>
         <nav>
           {[
             ['Overview', LayoutDashboard],
@@ -266,8 +272,8 @@ function App() {
         <div className="sidebar-bottom">
           <div className="autopilot">
             <ShieldCheck size={22} />
-            <strong>Your rules. Always.</strong>
-            <p>Each watch gets its own virtual card and limit. Ask-first is the default.</p>
+            <strong>You set the limit</strong>
+            <p>Every watch issues its own virtual card. Ask-first stays on unless you choose auto-buy.</p>
             <span>
               <i /> {payments === 'nessie' ? 'Nessie settlement' : 'Simulated payments'}
             </span>
@@ -286,7 +292,7 @@ function App() {
           <div className="profile">
             <span className="profile-avatar">Y</span>
             <div>
-              Your workspace<small>Hackathon preview</small>
+              Signed in<small>Hackathon preview</small>
             </div>
             <CircleHelp size={17} />
           </div>
@@ -296,7 +302,7 @@ function App() {
       <div className="main-shell">
         <header>
           <div className="breadcrumb">
-            Your space <ChevronRight size={13} /> <strong>{page}</strong>
+            Account <ChevronRight size={13} /> <strong>{page}</strong>
           </div>
           <div className="header-right">
             <span className="preview-badge">HACKATHON PREVIEW</span>
@@ -314,25 +320,29 @@ function App() {
         <main>
           <div className="page-title">
             <div>
-              <div className="eyebrow">A LITTLE PATIENCE. A BETTER PRICE.</div>
+              <div className="eyebrow">DealOne price protection</div>
               <h1>
                 {page === 'Overview'
-                  ? 'Good things come to those who watch.'
+                  ? 'Set your price. Stay in control.'
                   : page === 'Watchlist'
-                    ? 'Your wishlist. Working for you.'
+                    ? 'Your watches and spending limits'
                     : page === 'Activity'
-                      ? 'Every move, in the open.'
-                      : 'Meet your shopping copilot.'}
+                      ? 'Transactions and alerts'
+                      : 'Ask Grok to find a deal'}
               </h1>
               <p>
                 {page === 'Overview'
-                  ? 'Set your price. We’ll watch the market and catch your moment.'
-                  : 'Thoughtful shopping, with you in control.'}
+                  ? 'Watch an item, set a maximum, and decide whether we ask before buying.'
+                  : page === 'Watchlist'
+                    ? 'Review active cards, budgets, and purchase modes in one place.'
+                    : page === 'Activity'
+                      ? 'See charges, settlements, and declines as they happen.'
+                      : 'Describe what you want. We’ll match it to a catalog item you can watch.'}
               </p>
             </div>
             <Button onClick={() => (visibleProducts[0] || products[0]) && openWatch(visibleProducts[0] || products[0])}>
               <Plus size={17} />
-              New watch
+              Start a watch
             </Button>
           </div>
           {error && (
@@ -355,27 +365,24 @@ function App() {
                   <section className="hero">
                     <div className="hero-copy">
                       <span className="hero-label">
-                        <span /> YOUR NEXT DEAL IS OUT THERE
+                        <span /> VIRTUAL CARD CONTROLS
                       </span>
                       <h2>
-                        You have the wishlist.
+                        Wait for your price.
                         <br />
-                        We have the watch.
+                        Never overpay.
                       </h2>
                       <p>
-                        Your agent follows the price, checks your rules, and
-                        <br className="desktop" /> makes the move when everything lines up.
+                        DealOne tracks the total, checks your limit, and only
+                        <br className="desktop" /> moves when you say so — or when auto-buy is on.
                       </p>
                       <button onClick={() => setPage('Grok assistant')}>
-                        Meet your Grok agent <ArrowUpRight size={17} />
+                        Find an item with Grok <ArrowUpRight size={17} />
                       </button>
                     </div>
                     <div className="hero-art" aria-hidden="true">
                       <div className="orbit orbit-one" />
                       <div className="orbit orbit-two" />
-                      <div className="float-tag">
-                        <TrendingDown size={15} /> The right price. Finally.
-                      </div>
                       <div className="floating-card">
                         <div className="card-top">
                           <ShieldCheck size={23} />
@@ -384,12 +391,9 @@ function App() {
                         <div className="card-chip" />
                         <div className="card-number">•••• &nbsp; •••• &nbsp; •••• &nbsp; DEMO</div>
                         <div className="card-bottom">
-                          <span>ONE PURCHASE. YOUR LIMIT.</span>
+                          <span>ONE CHARGE · YOUR LIMIT</span>
                           <Command size={22} />
                         </div>
-                      </div>
-                      <div className="secure-chip">
-                        <Check size={13} /> Governed by your rules
                       </div>
                     </div>
                   </section>
@@ -400,7 +404,7 @@ function App() {
                         Active watches
                         <strong>
                           {activeWatches}
-                          <small> items on our radar</small>
+                          <small> cards monitoring price</small>
                         </strong>
                       </span>
                     </div>
@@ -410,7 +414,7 @@ function App() {
                         Authorized budget
                         <strong>
                           {money(committed)}
-                          <small> total maximum</small>
+                          <small> combined card limits</small>
                         </strong>
                       </span>
                     </div>
@@ -420,7 +424,7 @@ function App() {
                         Completed purchases
                         <strong>
                           {completed.length}
-                          <small> simulated orders</small>
+                          <small> settled demo orders</small>
                         </strong>
                       </span>
                     </div>
@@ -433,13 +437,13 @@ function App() {
                   <div className="section-heading">
                     <div>
                       <h2>
-                        {page === 'Watchlist' ? 'Your watches' : 'On the radar'}{' '}
+                        {page === 'Watchlist' ? 'Your watches' : 'Catalog'}{' '}
                         <span>{page === 'Watchlist' ? watches.length : visibleProducts.length}</span>
                       </h2>
                       <p>
                         {page === 'Watchlist'
-                          ? 'Your permissions, budgets, and progress.'
-                          : 'Find something you love. Let the price come to you.'}
+                          ? 'Permissions, card limits, and purchase status.'
+                          : 'Pick an item, set your max, and start watching.'}
                       </p>
                     </div>
                     <span className="live-label">
@@ -451,8 +455,8 @@ function App() {
                       {watches.length === 0 ? (
                         <div className="empty">
                           <Radar />
-                          <h3>A little wishful thinking goes a long way.</h3>
-                          <p>Create your first watch to get started.</p>
+                          <h3>No watches yet</h3>
+                          <p>Start a watch to issue a virtual card and set your price limit.</p>
                         </div>
                       ) : (
                         watches.map((w) => {
@@ -745,7 +749,7 @@ function App() {
                   <div className="assistant-avatar">
                     <Sparkles size={29} />
                   </div>
-                  <h2>A good deal starts with a conversation.</h2>
+                  <h2>Tell Grok what you’re shopping for</h2>
                   <p>Ask about products, price history, or your activated watches.</p>
                   <span className={`status ${grok ? 'active' : 'draft'}`}>
                     {grok ? 'Grok connected' : 'Grok API key not configured'}
@@ -824,7 +828,7 @@ function App() {
               <SelectedIcon size={24} />
             </span>
             <h2 id="watch-title">
-              {draft ? 'Your rules. Your call.' : 'Put a good deal in motion.'}
+              {draft ? 'Confirm your purchase rules' : 'Set your price and limit'}
             </h2>
             <p>
               {selected.name} · {selected.variant}
@@ -1019,7 +1023,7 @@ function App() {
             >
               <X size={21} />
             </button>
-            <h2 id="demo-title">Make the moment happen.</h2>
+            <h2 id="demo-title">Demo controls</h2>
             <p>Change a demo price to exercise the real monitoring and checkout flow.</p>
             <form
               onSubmit={(e) => {
