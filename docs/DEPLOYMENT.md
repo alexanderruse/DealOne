@@ -35,7 +35,7 @@ Create these repository **Variables**:
 
 When `NESSIE_API_KEY` is set with `NESSIE_CUSTOMER_ID` or `NESSIE_CARD_ACCOUNT_ID`, deployment configures `PAYMENTS_MODE=nessie`. Production also requires `NESSIE_MERCHANT_ID`. The deploy workflow must expose those names into the job environment (secret + vars). Use Demo controls → **Seed sandbox** locally to create merchant/customer ids, then store them as secrets/variables. Each activated watch gets its own Nessie credit card capped at the watch budget; after the cancel window the worker settles pending charges.
 
-Production always sets `REAL_CATALOG_ENABLED=false`, so Keychron / external retailer feeds stay off on dealone.work.
+Production sets `REAL_CATALOG_ENABLED=true` and exposes real Keychron products only. Disabling feed polling never restores fictional products; stale availability cannot accept requests.
 
 Domain `dealone.work`, region `ewr`, and registry UUID `369a6c53-fd50-4fe2-93d6-a151ec00c845` are already set in deployment code. `GITHUB_TOKEN` is supplied by GitHub. Kubeconfig, registry username, and registry password are obtained by the workflow; separate repository secrets are not needed.
 
