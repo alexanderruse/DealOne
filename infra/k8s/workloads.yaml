@@ -37,7 +37,7 @@ spec:
           securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
           resources:
             requests: {cpu: 200m, memory: 256Mi}
-            limits: {cpu: '1', memory: 768Mi}
+            limits: {cpu: '1', memory: 1280Mi}
           readinessProbe:
             httpGet: {path: /api/health/ready, port: 8000}
             initialDelaySeconds: 5
