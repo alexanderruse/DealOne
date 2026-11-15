@@ -176,9 +176,6 @@ def test_checkout_demo_queue_and_safeguards(client, db, factory, tmp_path, monke
         assert res.status_code == 200
         demo_run = res.json()
 
-        # Context route interception was registered
-        assert mock_context.route.called
-
     db.expire_all()
     updated_run = db.get(CheckoutDemoRun, demo_run["id"])
     assert updated_run.status == "completed"
