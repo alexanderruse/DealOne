@@ -723,13 +723,13 @@ h1 {
   color: var(--muted);
 }
 .product-info h3 {
-  font-size: 14px;
+  font-size: 20px;
   font-weight: 600;
   margin: 8px 0 5px;
   letter-spacing: -0.15px;
 }
 .product-info > p {
-  font-size: 14px;
+  font-size: 16px;
   color: var(--muted);
 }
 .price {
@@ -1346,12 +1346,6 @@ textarea::placeholder {
   .product-info {
     padding: 23px;
   }
-  .product-info h3 {
-    font-size: 15px;
-  }
-  .product-info > p {
-    font-size: 14px;
-  }
   .seller {
     font-size: 14px;
   }
@@ -1418,9 +1412,6 @@ textarea::placeholder {
   }
   .trust-strip {
     align-items: flex-start;
-  }
-  .product-info h3 {
-    font-size: 14px;
   }
   .autopilot {
     padding: 14px;
@@ -1661,6 +1652,7 @@ textarea::placeholder {
     height: 34px;
   }
   .section-heading {
+    flex-wrap: wrap;
     gap: 15px;
     align-items: flex-start;
   }
@@ -1673,7 +1665,7 @@ textarea::placeholder {
     max-width: 160px;
   }
   .live-label {
-    max-width: 83px;
+    max-width: 100%;
     line-height: 1.6;
     font-size: 14px;
     margin-top: 4px;
@@ -1701,12 +1693,6 @@ textarea::placeholder {
   }
   .product-info {
     padding: 21px;
-  }
-  .product-info h3 {
-    font-size: 14px;
-  }
-  .product-info > p {
-    font-size: 14px;
   }
   .seller {
     font-size: 14px;
