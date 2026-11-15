@@ -1,116 +1,46 @@
-name: Deploy DealOne
+name: Diagnose merchant feed (read only)
 on:
-  workflow_run:
-    workflows: [Checks]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
-    inputs:
-      image_tag:
-        description: Existing image commit SHA for rollback; leave blank to build current revision
-        type: string
 permissions:
   contents: read
-concurrency:
-  group: dealone-production
-  cancel-in-progress: false
 jobs:
-  deploy:
-    if: >-
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
+  diagnose:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 8
     env:
       VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
       VULTR_CLUSTER_ID: ${{ vars.VULTR_CLUSTER_ID }}
-      ACME_EMAIL: ${{ vars.ACME_EMAIL }}
-      VULTR_REGISTRY_ID: 369a6c53-fd50-4fe2-93d6-a151ec00c845
-      VULTR_REGISTRY_ENDPOINT: ${{ vars.VULTR_REGISTRY_ENDPOINT }}
-      KUBECONFIG: /tmp/dealone.kubeconfig
-      DOCKER_CONFIG: /tmp/dealone-docker
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
-      DEMO_ADMIN_TOKEN: ${{ secrets.DEMO_ADMIN_TOKEN }}
-      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
-      NESSIE_API_KEY: ${{ secrets.NESSIE_API_KEY }}
-      NESSIE_CUSTOMER_ID: ${{ vars.NESSIE_CUSTOMER_ID }}
-      NESSIE_MERCHANT_ID: ${{ vars.NESSIE_MERCHANT_ID }}
-      NESSIE_CARD_ACCOUNT_ID: ${{ vars.NESSIE_CARD_ACCOUNT_ID }}
-      XAI_MODEL: ${{ vars.XAI_MODEL }}
-      APP_DOMAIN: dealone.work
-      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-      RESEND_FROM_EMAIL: ${{ vars.RESEND_FROM_EMAIL }}
+      KUBECONFIG: /tmp/dealone-diagnostic.kubeconfig
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - uses: azure/setup-kubectl@v4
-      - uses: azure/setup-helm@v4.3.0
-        with: {version: v3.17.3}
-      - name: Connect Nessie sandbox customer and merchant
-        run: python3 scripts/nessie_setup.py
-      - name: Validate runtime configuration
+      - name: Connect read-only diagnostic client
+        run: python3 scripts/vultr.py kubeconfig
+      - name: Read merchant-only worker warnings
         run: |
-          python3 - <<'PY'
-          import os
-          import sys
-          sys.path.insert(0, "scripts")
-          from deploy import runtime_config
-          required = ("VULTR_API_KEY", "VULTR_CLUSTER_ID", "ACME_EMAIL")
-          missing = [name for name in required if not os.getenv(name, "").strip()]
-          if missing:
-              sys.exit("Missing GitHub deployment configuration: " + ", ".join(missing))
-          runtime_config()
+          kubectl logs deployment/worker -n dealone --tail=250 | python3 -c 'import sys; [print(line.rstrip()) for line in sys.stdin if "keychron" in line.lower()]'
+      - name: Check approved merchant responses inside the API pod
+        run: |
+          kubectl exec -i deployment/api -n dealone -- python -u - <<'PY'
+          import httpx, time
+          from app.catalog import SOURCES, parse_product
+          client=httpx.Client(timeout=12)
+          for source in SOURCES:
+              try:
+                  response = client.get('https://www.keychron.com/products/'+source[0]+'.js',params={'currency':'USD'},timeout=12)
+                  print(source[0],response.status_code,response.headers.get('content-type'),response.headers.get('retry-after'))
+                  if response.status_code==429:
+                      time.sleep(2)
+                      response=client.get('https://www.keychron.com/products/'+source[0]+'.js',params={'currency':'USD'},timeout=12)
+                      print('Same URL after two-second backoff:',source[0],response.status_code)
+                  if response.status_code==200:
+                      payload=response.json()
+                      print('Variant availability:',[(v.get('id'),v.get('available')) for v in payload.get('variants',[])])
+                      record=parse_product(payload,*source)
+                      print('Normalized:',record['id'],record['stock_status'],record['price_cents'])
+              except Exception as error:
+                  print(source[0],type(error).__name__,str(error)[:160])
           PY
-      - name: Connect to existing Vultr cluster
-        run: |
-          python3 scripts/vultr.py kubeconfig
-          kubectl wait --for=condition=Ready nodes --all --timeout=300s
-      - name: Install or reconcile ingress and HTTPS certificates
-        run: python3 scripts/bootstrap.py
-      - name: Get short-lived push credentials and registry endpoint
-        id: registry
-        run: python3 scripts/vultr.py registry-push
-      - name: Select immutable image tag
-        id: revision
-        env:
-          ROLLBACK_TAG: ${{ inputs.image_tag }}
-        run: |
-          TAG="${ROLLBACK_TAG:-$(git rev-parse HEAD)}"
-          if ! [[ "$TAG" =~ ^[a-f0-9]{40}$ ]]; then echo 'Expected a full commit SHA'; exit 1; fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-      - name: Build and push images
-        if: inputs.image_tag == ''
-        env:
-          ENDPOINT: ${{ steps.registry.outputs.endpoint }}
-          TAG: ${{ steps.revision.outputs.tag }}
-        run: |
-          docker buildx create --use
-          docker buildx build --platform linux/amd64 --target api --tag "$ENDPOINT/dealone-api:$TAG" --push backend
-          docker buildx build --platform linux/amd64 --target worker --tag "$ENDPOINT/dealone-worker:$TAG" --push backend
-          docker buildx build --platform linux/amd64 --tag "$ENDPOINT/dealone-web:$TAG" --push frontend
-      - name: Refresh read-only pull credentials
-        run: |
-          kubectl apply -f infra/k8s/namespace.yaml
-          python3 scripts/vultr.py registry-pull
-      - name: Synchronize Porkbun domain with load balancer
-        env:
-          PORKBUN_API_KEY: ${{ secrets.PORKBUN_API_KEY }}
-          PORKBUN_SECRET_API_KEY: ${{ secrets.PORKBUN_SECRET_API_KEY }}
-        run: python3 scripts/dns.py --apply
-      - name: Migrate and roll out
-        env:
-          ENDPOINT: ${{ steps.registry.outputs.endpoint }}
-          TAG: ${{ steps.revision.outputs.tag }}
-        run: python3 scripts/deploy.py --endpoint "$ENDPOINT" --tag "$TAG"
-      - name: Verify HTTPS and API
-        run: |
-          kubectl wait --for=condition=Ready certificate/dealone-tls -n dealone --timeout=300s
-          curl --fail --retry 5 --retry-delay 5 https://dealone.work/api/health/ready
-          curl --fail https://dealone.work/api/health/worker
-          curl --fail https://dealone.work/health
-      - name: Remove local credentials
+      - name: Remove temporary credentials
         if: always()
-        run: |
-          rm -f "$KUBECONFIG" "$DOCKER_CONFIG/config.json"
+        run: rm -f "$KUBECONFIG"
