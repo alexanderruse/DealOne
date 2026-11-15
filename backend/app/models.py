@@ -65,6 +65,7 @@ class Permission(Base):
     sandbox_total_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     purchase_mode: Mapped[str] = mapped_column(String(20), default="ask_first")
     status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -128,6 +129,7 @@ class Notification(Base):
     owner: Mapped[str] = mapped_column(String(36), index=True)
     event_key: Mapped[str] = mapped_column(String(100))
     message: Mapped[str] = mapped_column(Text)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -170,6 +172,8 @@ class CheckoutDemoRun(Base):
     status: Mapped[str] = mapped_column(String(30), default="queued", index=True)  # queued, running, completed, blocked, failed
     blocker_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     nessie_verified_limit_cents: Mapped[int] = mapped_column(Integer, default=0)
+    cart_total_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cart_discount_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     fields_completed: Mapped[str] = mapped_column(Text, default="[]")  # JSON encoded list of completed fields
     screenshot_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     screenshot_png: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True, deferred=True)

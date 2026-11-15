@@ -19,9 +19,11 @@ sys.path.insert(0, str(ROOT / 'backend'))
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--url', default='https://www.keychron.com/products/keychron-k12-wireless-mechanical-keyboard?variant=39299048079449')
+    parser.add_argument('--allowance-cents', type=int, default=10000)
+    parser.add_argument('--admin-preview', action='store_true')
     parser.add_argument('--headed', action='store_true')
     parser.add_argument('--browser', choices=['chromium', 'firefox'], default='chromium')
-    parser.add_argument('--analyze', action='store_true', help='Review masked captures using the existing OpenRouter key/model')
+    parser.add_argument('--analyze', action='store_true', help='Review synthetic checkout captures using the existing OpenRouter key/model')
     args = parser.parse_args()
     from dotenv import load_dotenv
     load_dotenv(ROOT / '.env')
@@ -31,7 +33,7 @@ def main():
     if make_url(local_url).host not in ('localhost', '127.0.0.1', '::1', 'db', 'host.docker.internal'):
         parser.error('LOCAL_DEMO_DATABASE_URL must point to a local database')
     schema = 'checkout_demo_' + uuid4().hex
-    output = ROOT / 'infra/generated/local-checkout' / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    output = ROOT / 'infra/generated/local-checkout' / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
     output.mkdir(parents=True)
     os.environ.update(DATABASE_URL=local_url + ('&' if '?' in local_url else '?') + 'options=-csearch_path%3D' + schema,
                       APP_ENV='development', PAYMENTS_MODE='simulation', REAL_CATALOG_ENABLED='false',
@@ -40,6 +42,7 @@ def main():
     sys.path.insert(0, str(ROOT))
     from app import worker
     from app.db import Base, engine, SessionLocal
+    from app.merchant_links import link_id
     from app.models import ApprovedDomain, CheckoutDemoRun, Permission, Product, VirtualCard, utcnow
     from playwright.sync_api import BrowserContext, BrowserType, Page, sync_playwright
     local_engine = create_engine(local_url)
@@ -74,6 +77,8 @@ def main():
             yield SimpleNamespace(chromium=getattr(pw, args.browser))
 
     def capture_comparison(page, **kwargs):
+        if "clip" in kwargs:
+            return screenshot(page, path=str(output / 'payment-close-up.png'), **kwargs)
         frames = []
         painted = []
         for frame in page.frames:
@@ -103,8 +108,8 @@ def main():
         Base.metadata.create_all(engine)
         print('Local database ready', flush=True)
         with SessionLocal.begin() as db:
-            product = Product(id='local-keychron', name='Keychron K12 local checkout demo', variant='Selected merchant variant',
-                              seller='Keychron', category='Keyboard', condition='new', price_cents=5999,
+            product = Product(id=link_id(args.url), name='Local checkout demo', variant='Selected merchant variant',
+                              seller=urlparse(args.url).hostname, category='Keyboard', condition='new', price_cents=5999,
                               original_cents=5999, shipping_cents=0, tax_basis_points=0, currency='USD',
                               source_kind='merchant', source_url=args.url, stock_status='in_stock', stock=1, price_checked_at=utcnow())
             db.add(product)
@@ -112,12 +117,12 @@ def main():
             db.flush()
             permission = Permission(id='local-permission', owner='local-demo', product_id=product.id,
                                     variant=product.variant, seller=product.seller, condition='new', currency='USD',
-                                    quantity=1, max_total_cents=10000, expires_at=utcnow()+timedelta(days=1), status='active')
+                                    quantity=1, max_total_cents=args.allowance_cents, expires_at=utcnow()+timedelta(days=1), status='active')
             db.add(permission)
             db.flush()
-            db.add(VirtualCard(permission_id=permission.id, last4='4242', limit_cents=10000, status='issued'))
+            db.add(VirtualCard(permission_id=permission.id, last4='4242', limit_cents=args.allowance_cents, status='issued'))
             demo = CheckoutDemoRun(permission_id=permission.id, owner=permission.owner, product_id=product.id,
-                                   trigger_type='local_demo', status='queued')
+                                   trigger_type='manual_admin' if args.admin_preview else 'local_demo', status='queued')
             db.add(demo)
             db.flush()
             demo_id = demo.id
@@ -130,7 +135,8 @@ def main():
         with SessionLocal() as db:
             demo = db.get(CheckoutDemoRun, demo_id)
             outcome = {'status': demo.status, 'blocker': demo.blocker_reason, 'fields': json.loads(demo.fields_completed),
-                       'submitted': demo.is_submitted, 'browser': args.browser}
+                       'submitted': demo.is_submitted, 'browser': args.browser,
+                       'cart_total_cents': demo.cart_total_cents, 'cart_discount_cents': demo.cart_discount_cents}
             (output / 'outcome.json').write_text(json.dumps(outcome, indent=2))
             print(json.dumps(outcome), flush=True)
         print('Artifacts:', output, flush=True)

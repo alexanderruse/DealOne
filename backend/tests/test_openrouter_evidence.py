@@ -135,7 +135,7 @@ def test_checkout_demo_queue_and_safeguards(client, db, factory, tmp_path, monke
 
     permission = Permission(
         id="demo-perm",
-        owner="user",
+        owner=client.get("/api/session").json()["session_id"],
         product_id=product.id,
         variant="RGB",
         seller="Keychron",
@@ -159,8 +159,8 @@ def test_checkout_demo_queue_and_safeguards(client, db, factory, tmp_path, monke
 
     admin_headers = {"x-demo-admin-token": settings().demo_admin_token}
 
-    # Execute checkout demo runner with mocked playwright page to test strict submission prevention & masking
-    with patch("app.worker.sync_playwright") as mock_pw:
+    # Execute checkout demo runner with mocked playwright page to test submission prevention and evidence capture
+    with patch("app.worker.sync_playwright") as mock_pw, patch("app.worker.open_demo_checkout"), patch("app.worker.advance_demo_delivery"):
         mock_browser = Mock()
         mock_context = Mock()
         mock_page = Mock()
@@ -169,15 +169,17 @@ def test_checkout_demo_queue_and_safeguards(client, db, factory, tmp_path, monke
         mock_context.new_page.return_value = mock_page
 
         mock_page.locator.return_value.count.return_value = 0
+        mock_page.locator.return_value.all.return_value = []
         mock_page.frames = []
         mock_page.url = "https://www.keychron.com/checkouts/cn/test123"
-        mock_page.evaluate.return_value = "normal checkout page"
+        mock_page.evaluate.side_effect = lambda script, *args: True if args else "normal checkout page"
         mock_page.screenshot.side_effect = lambda path, **kwargs: Path(path).write_bytes(b"FAKE_PNG_BYTES")
 
         # Trigger checkout demo via admin endpoint (runs background task with mock)
         res = client.post("/api/demo/checkout-demo", json={"permission_id": permission.id}, headers=admin_headers)
         assert res.status_code == 200
         demo_run = res.json()
+        assert demo_run["trigger_type"] == "manual_admin"
 
     db.expire_all()
     updated_run = db.get(CheckoutDemoRun, demo_run["id"])
@@ -205,8 +207,65 @@ def test_checkout_demo_queue_and_safeguards(client, db, factory, tmp_path, monke
     # Check /screenshots HTML gallery
     res = client.get("/screenshots")
     assert res.status_code == 200
-    assert "Checkout Automation Evidence Gallery" in res.text
+    assert "Checkout Runs" in res.text
     assert "NOT SUBMITTED" in res.text
+    assert client.delete(f"/api/demo/checkout-demos/{demo_run['id']}").status_code == 200
+    assert client.get(f"/api/screenshots/{demo_run['id']}").status_code == 404
+    body = {"permission_id": permission.id}
+    with patch("app.worker.run_checkout_demo") as run_demo:
+        wrong_token = client.post("/api/demo/checkout-demo", json=body,
+                                  headers={"x-demo-admin-token": "wrong-token"})
+        assert wrong_token.status_code == 403
+        run_demo.assert_not_called()
+        manual = client.post("/api/demo/checkout-demo", json=body)
+        assert manual.json()["trigger_type"] == "manual_user"
+
+
+@pytest.mark.parametrize(("quantity", "allowance", "error"), [
+    (1, 4500, None), (2, 4500, "one unit"), (1, 4100, "exceeds the watch allowance"),
+])
+def test_checkout_cart_checks_quantity_allowance_and_discount(quantity, allowance, error):
+    from app.worker import verify_demo_cart
+
+    item = {"handle": "soap", "variant": "12345", "quantity": quantity, "subscription": False}
+    cart = ([item], "USD", "45.00", None, 300)
+    evidence = {}
+    args = {"handle": "soap", "variant": "12345", "allowance": allowance, "evidence": evidence}
+    if error:
+        with pytest.raises(ValueError, match=error):
+            verify_demo_cart(cart, **args)
+    else:
+        assert verify_demo_cart(cart, **args) == (item, None)
+        assert evidence == {"cart_total_cents": 4500, "cart_discount_cents": 300}
+        verify_demo_cart(cart, **{**args, "allowance": 4100}, admin_preview=True)
+        assert "Admin preview continued" in evidence["preview_warning"]
+
+
+def test_checkout_field_suggestions_only_fill_known_contact_controls(factory):
+    from app.worker import complete_demo_contact_fields
+
+    page = Mock()
+    candidate = Mock()
+    candidate.evaluate.return_value = "Town | text"
+    target = candidate.element_handle.return_value
+    target.input_value.side_effect = ["", "New York"]
+    target.get_attribute.return_value = None
+    page.locator.return_value.all.return_value = [candidate]
+    ai_client = Mock()
+    create = ai_client.with_options.return_value.chat.completions.create
+    choice = Mock()
+    choice.message.content = json.dumps(
+        {"city": "0", "card_number": "0", "click": "Pay now"}
+    )
+    create.return_value.choices = [choice]
+    completed = ["email", "first_name", "last_name", "address1", "address2", "postal_code"]
+    with patch("app.worker.SessionLocal", factory), patch("app.ai.client", return_value=ai_client):
+        complete_demo_contact_fields(page, {"city": "New York", "card_number": "synthetic"}, completed)
+
+    assert completed[-1] == "city"
+    assert "card_number" not in completed
+    target.fill.assert_called_once_with("New York", timeout=2000)
+    target.click.assert_not_called()
 
 
 def test_masked_phone_input_is_retried_and_verified():

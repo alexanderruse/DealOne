@@ -45,7 +45,7 @@ test('large catalogs batch only watched histories and preserve evidence on trans
   await expect.poll(() => historyBatches.length).toBe(1);
   expect(historyBatches[0]).toEqual(products.slice(0, 2).map((product) => product.id));
   expect(legacyHistoryRequests).toBe(0);
-  await page.getByRole('button', { name: 'Evidence Gallery', exact: true }).click();
+  await page.getByRole('button', { name: 'Checkout Runs', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Keyboard proof' })).toBeVisible();
   await expect.poll(() => evidenceRequests, { timeout: 10000 }).toBeGreaterThan(1);
   await expect(page.getByRole('heading', { name: 'Keyboard proof' })).toBeVisible();

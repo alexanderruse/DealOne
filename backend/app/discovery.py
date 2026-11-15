@@ -6,9 +6,10 @@ from decimal import Decimal, DecimalException
 from urllib.parse import urlparse
 
 import httpx
+from playwright.sync_api import Error as PlaywrightError
 from sqlalchemy import select, text, func
 
-from .catalog import (STORES, image_url, parse_product, fetch_feed, public_products,
+from .merchant_products import (STORES, image_url, parse_product, fetch_feed, scrape_product_browser, public_products,
                       store_product_url, validate_handle, retry_delay)
 from .config import settings
 from .db import SessionLocal
@@ -164,14 +165,15 @@ def register_observed_products(db, store):
         group = grouped.setdefault(handle, {"checked": product.price_checked_at, "watched": False})
         group["watched"] |= product.id in watched_ids
     for handle, row in grouped.items():
-        key = task_key(store, "product", handle)
+        if not row["watched"]:
+            continue
+        kind = "link" if store.startswith("link-") else "product"
+        key = task_key(store, kind, handle)
         task = db.get(CatalogTask, key)
         due = row["checked"] or now-timedelta(days=1)
         interval = 300 if store.startswith("link-") else 130
-        if not row["watched"]:
-            interval = 1800
         if not task:
-            task = CatalogTask(id=key, store=store, kind="link" if store.startswith("link-") else "product", target=handle, status="complete",
+            task = CatalogTask(id=key, store=store, kind=kind, target=handle, status="complete",
                 priority=30 if row["watched"] else 0, attempts=0, result={}, message="Previously observed merchant product",
                 checked_at=row["checked"], requested_at=now, next_attempt_at=due+timedelta(seconds=interval))
             db.add(task)
@@ -242,7 +244,10 @@ def process_store(store):
                         enqueue(db, store, "product", listing["handle"], priority=50)
                     task.message = f"Found {len(listings)} real listings. Exact variants are checked separately before requesting."
                 else:
-                    payload = fetch_feed(client, task.target, store=store)
+                    try:
+                        payload = scrape_product_browser(task.target, db, store=store)
+                    except (PlaywrightError, ValueError):
+                        payload = fetch_feed(client, task.target, store=store)
                     raw = payload.get("product", payload)
                     category, icon = category_for(raw["title"], raw.get("type", raw.get("product_type", "")))
                     ids = set()

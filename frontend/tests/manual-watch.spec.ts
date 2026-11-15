@@ -67,10 +67,10 @@ test('manual links select the specified variant and Activity follows checkout ev
   await page.getByRole('button', { name: 'Activity', exact: true }).click();
   await expect(page.getByText('running', { exact: true })).toBeVisible();
   finish = true;
-  await page.getByRole('button', { name: 'View evidence' }).click({ timeout: 10000 });
+  await page.getByRole('button', { name: 'View checkout run', exact: true }).click({ timeout: 10000 });
   const latest = page.locator('#evidence-fixture');
-  await expect(latest.getByAltText('Masked payment close-up')).toHaveAttribute('src', '/api/screenshots/fixture/payment');
-  await expect(latest.getByAltText('Masked checkout demonstration evidence screenshot')).toBeVisible();
+  await expect(latest.getByAltText('Synthetic payment close-up')).toHaveAttribute('src', '/api/screenshots/fixture/payment');
+  await expect(latest.getByAltText('Synthetic checkout demonstration evidence screenshot')).toBeVisible();
   await expect(page.locator('#evidence-old')).toContainText('Payment close-up unavailable');
   await expect(page.locator('#evidence-old img')).toHaveAttribute('src', '/api/screenshots/old');
 });

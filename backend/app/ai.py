@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .merchant_links import is_approved
 from .models import Product, PriceObservation, Permission, Order, Notification, AISpendRecord, utcnow
-from .schemas import DiscoveryRequest, InspectRequest
-from .schemas import Rules, SearchRequest, ProductReference, PermissionReference, EmptyRequest
+from .schemas import InspectRequest
+from .schemas import Rules, ProductReference, PermissionReference, EmptyRequest
 from .services import product_view, serialize, prepare_order, PurchaseRejected, validate_purchase
 
 log = logging.getLogger("dealone.ai")
@@ -183,7 +183,7 @@ class RuleExtraction(BaseModel):
 
 
 def parse_rules(text_input: str, db: Session):
-    from .catalog import public_products, requestable
+    from .merchant_products import public_products, requestable
     catalog = [product_view(p) for p in public_products(db) if requestable(p) and is_approved(db, p.source_url)]
     spend_record = check_and_reserve_budget(db, purpose="rules_parse", estimated_cost=0.005)
 
@@ -250,7 +250,7 @@ def parse_rules(text_input: str, db: Session):
     rules = extraction.rules
     if not extraction.exact_product_match or rules is None:
         raise HTTPException(422, extraction.explanation[:240] or "Choose an exact supported item and a maximum budget.")
-    from .catalog import ensure_requestable
+    from .merchant_products import ensure_requestable
     try:
         ensure_requestable(db.get(Product, rules.product_id))
     except ValueError as exc:
@@ -262,10 +262,7 @@ def parse_rules(text_input: str, db: Session):
 
 def assistant(text_input: str, db: Session, owner: str):
     definitions = [
-        ("discover_products", "Search the approved store's actual catalog for any requested product, not just cached items. Returns genuine listing previews and a queued verification status.", DiscoveryRequest),
         ("inspect_product", "Read all variants, current availability, images and prices for a product URL from an approved merchant. May be queued by merchant cooldown.", InspectRequest),
-        ("find_product", "Search cached exact variants from approved stores with short keywords; includes sold-out items by default", SearchRequest),
-        ("refresh_catalog", "Request an inventory check; respects shared merchant cooldown and may return scheduled", EmptyRequest),
         ("get_activity", "Read this user's recent alerts, watches and sandbox orders", EmptyRequest),
         ("create_watch_draft", "Draft rules for an exact available item and explicit user budget; user must review and activate", Rules),
         ("get_price_history", "Read observed prices for a catalog product", ProductReference),
@@ -294,10 +291,10 @@ def assistant(text_input: str, db: Session, owner: str):
         "Use create_watch_draft only when the user explicitly requests a watch and provides a maximum budget. "
         "A draft does not activate a watch or issue a card. Never invent a budget. Default deadline is seven days. "
         "The approved domains whitelist defines valid store domains. "
-        "Include both available and sold-out variants in discovery unless the user specifies availability. "
+        "Ask for a product link when the user wants to check an item. Include both available and sold-out variants. "
         "Stock is a recent merchant snapshot, not a live warehouse guarantee. Respect refresh scheduled/unavailable results. "
         f"Current UTC time: {datetime.now(timezone.utc).isoformat()}. "
-        "Use find_product for exact catalog IDs. Merchant products support price alerts and store links, "
+        "Use inspect_product to verify exact variants from an approved product link. Merchant products support price alerts and store links, "
         "not automated retailer checkout. A sandbox permission may authorize a Nessie demonstration charge only. "
         "Never present a sandbox transaction as a merchant order. Sold-out or unverified items cannot be requested. "
         "Never invent listings, prices or purchase confirmations. "
@@ -379,17 +376,10 @@ def assistant(text_input: str, db: Session, owner: str):
 
 
 def execute_tool(name, args, db: Session, owner: str):
-    from .catalog import public_products, refresh_catalog
-    if name == "discover_products":
-        from .discovery import discover
-        return discover(db, args.store, args.query)
+    from .merchant_products import public_products
     if name == "inspect_product":
         from .discovery import inspect
         return inspect(db, args.url)
-    if name == "refresh_catalog":
-        result = refresh_catalog()
-        db.expire_all()
-        return result
     if name == "get_activity":
         return {
             "alerts": [serialize(n) for n in db.scalars(
@@ -407,13 +397,6 @@ def execute_tool(name, args, db: Session, owner: str):
     if name == "create_watch_draft":
         from .main import create_permission
         return create_permission(args, owner, db)
-    if name == "find_product":
-        terms = args.query.lower().split()[:8]
-        return [
-            product_view(p) for p in public_products(db)
-            if is_approved(db, p.source_url) and all(term in f"{p.name} {p.category} {p.seller} {p.variant}".lower() for term in terms)
-            and (args.availability == "all" or p.stock_status == args.availability)
-        ][:20]
     if name == "get_price_history":
         if args.product_id not in {p.id for p in public_products(db)}:
             raise PurchaseRejected("Only approved merchant products can be accessed")

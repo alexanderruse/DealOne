@@ -17,7 +17,7 @@ services:
   migrate:
     build: {context: backend, target: api}
     env_file: .env
-    command: [sh, -c, "alembic upgrade head && python -m app.seed"]
+    command: [sh, -c, "alembic upgrade head"]
     depends_on:
       db: {condition: service_healthy}
   api:
