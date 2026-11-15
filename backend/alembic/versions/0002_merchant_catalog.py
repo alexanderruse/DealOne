@@ -2,7 +2,7 @@
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0002"
+revision = "0002_merchant"
 down_revision = "0001"
 
 

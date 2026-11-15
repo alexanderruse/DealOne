@@ -1,6 +1,6 @@
 # DealOne
 
-**Set your price. Catch your moment.** A Grok-powered shopping agent that watches prices and completes one purchase within rules you explicitly authorize.
+**Set your price. Stay in control.** A Grok-powered shopping agent that watches prices and completes one purchase within rules you explicitly authorize.
 
 Built for a Capital One hackathon concept using **Grok / xAI**, **Tiger Data**, **Nessie** (optional sandbox bank), and **Vultr Kubernetes Engine**. This implementation uses a controlled demo storefront. Payments are simulated by default, or settled against Capital One’s **Nessie v2 sandbox** when configured. It does not charge real money or purchase from third-party retailers.
 

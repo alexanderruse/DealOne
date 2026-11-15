@@ -1,7 +1,7 @@
 """Per-permission virtual cards, ask-first mode, and product descriptions."""
 from alembic import op
 
-revision = "0002"
+revision = "0002_cards"
 down_revision = "0001"
 
 
