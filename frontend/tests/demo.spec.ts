@@ -20,6 +20,7 @@ async function checkLink(page: Page, url = mouseUrl, soldOut = false) {
 test('sold-out variants cannot be watched from a pasted link', async ({page}) => {
   await page.goto('/');
   await expect(page.locator('.product-card')).toHaveCount(0);
+  await expect(page.getByRole('button', {name: 'Refresh merchant inventory'})).toHaveCount(0);
   await checkLink(page, 'https://www.keychron.com/products/keychron-c3-pro-qmk-via-wired-mechanical-keyboard?variant=40574854037593');
   await expect(page.getByRole('dialog')).toContainText('Sold out');
   await expect(page.getByRole('button', {name:'Watch this item'})).toBeDisabled();

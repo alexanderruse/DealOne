@@ -774,7 +774,7 @@ function App() {
                     onSubmit={(e) => {
                       e.preventDefault();
                       run(async () => {
-                        const result = await api<{ message: string; inventory?: {message: string}; tools: { tool: string; result: unknown }[] }>(
+                        const result = await api<{ message: string; tools: { tool: string; result: unknown }[] }>(
                           '/assistant',
                           { method: 'POST', body: JSON.stringify({ text: chat }) },
                         );
@@ -820,7 +820,7 @@ function App() {
                   {recommendations.length > 0 && <div className="grok-products" aria-label="Product matches">
                     {products.filter((p) => recommendations.includes(p.id)).map((p) => <div className="grok-product" key={p.id}>
                       <ProductVisual key={p.id} product={p} compact />
-                      <div><strong>{p.name}</strong><small>{p.variant} · {p.seller} · {money(p.price_cents)} · {p.can_request ? 'Available' : p.stock_status === 'sold_out' ? 'Sold out' : 'Availability unverified'}</small></div>
+                      <div><strong>{p.name}</strong><small>{p.variant} · {p.seller} · {money(p.price_cents)}</small></div>
                       <Button disabled={!p.can_request} onClick={() => openWatch(p)}>Watch this item</Button>
                     </div>)}
                   </div>}
@@ -1167,7 +1167,7 @@ function App() {
               <X size={21} />
             </button>
             <h2 id="demo-title">Demo controls</h2>
-            <p>Real prices and stock come only from Keychron. Use the sandbox experience on an available real item to demonstrate card limits and transactions.</p>
+            <p>Real product details come from approved merchants. Use the sandbox experience on an eligible real item to demonstrate card limits and transactions.</p>
             <label htmlFor="admin-token">Demo administrator token</label>
             <input id="admin-token" type="password" value={adminToken} onChange={(e) => setAdminToken(e.target.value)} autoComplete="off" />
 
