@@ -160,7 +160,8 @@ def test_checkout_demo_queue_and_safeguards(client, db, factory, tmp_path, monke
     admin_headers = {"x-demo-admin-token": settings().demo_admin_token}
 
     # Execute checkout demo runner with mocked playwright page to test submission prevention and evidence capture
-    with patch("app.worker.sync_playwright") as mock_pw, patch("app.worker.open_demo_checkout"), patch("app.worker.advance_demo_delivery"):
+    with (patch("app.worker.sync_playwright") as mock_pw, patch("app.worker.open_demo_checkout"),
+          patch("app.worker.advance_demo_delivery"), patch("app.worker.recover_demo_checkout")):
         mock_browser = Mock()
         mock_context = Mock()
         mock_page = Mock()
@@ -266,6 +267,36 @@ def test_checkout_field_suggestions_only_fill_known_contact_controls(factory):
     assert "card_number" not in completed
     target.fill.assert_called_once_with("New York", timeout=2000)
     target.click.assert_not_called()
+
+
+def test_checkout_recovery_observes_each_step_and_rejects_payment_actions():
+    from app.worker import recover_demo_checkout
+
+    page = Mock(url="https://merchant.example/checkouts/example", frames=[])
+    steps = page.get_by_role.return_value.filter.return_value
+    steps.all_text_contents.side_effect = [["Continue to delivery"], [], []]
+    button = steps.nth.return_value.element_handle.return_value
+    field = Mock()
+    field.input_value.side_effect = ["", "New York"]
+    field.get_attribute.return_value = None
+    with (patch("app.worker.demo_contact_controls", side_effect=[
+              ({}, {}), ({"0": "Town"}, {"0": field}),
+          ]), patch("app.worker.checkout_suggestion", side_effect=[
+              {"continue": 0}, {"fill": "city", "control": "0"},
+          ]) as suggest):
+        completed = []
+        recover_demo_checkout(page, {"city": "New York"}, completed, {})
+
+    assert completed == ["city"]
+    button.click.assert_called_once()
+    field.fill.assert_called_once_with("New York", timeout=2000)
+    assert suggest.call_args_list[1].args[1]["inputs"] == {"0": "Town"}
+
+    steps.all_text_contents.side_effect = None
+    steps.all_text_contents.return_value = ["Pay now"]
+    with patch("app.worker.checkout_suggestion", return_value={"continue": 0}):
+        recover_demo_checkout(page, {}, [], {})
+    button.click.assert_called_once()
 
 
 def test_masked_phone_input_is_retried_and_verified():
