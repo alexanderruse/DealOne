@@ -1948,3 +1948,16 @@ textarea::placeholder {
   object-fit: contain;
   display: block;
 }
+
+/* Optional, timestamp-based observations for a single merchant variant. */
+.price-history { margin:18px 0; padding-top:14px; border-top:1px solid var(--line); color:var(--ink); }
+.price-history figcaption { font-size:15px; font-weight:700; }
+.price-history figcaption span { display:block; font-size:13px; font-weight:400; color:#444; }
+.price-history svg { display:block; width:100%; height:auto; margin:8px 0; }
+.price-history-range, .price-history-dates { display:flex; justify-content:space-between; gap:12px; font-size:13px; flex-wrap:wrap; }
+.price-history-range { margin-top:8px; font-weight:600; }
+.price-history-dates { color:#444; }
+.price-history p, .price-history details, .price-history-unchanged { font-size:14px; line-height:1.5; color:#333; margin-top:8px; }
+.price-history summary { cursor:pointer; text-decoration:underline; padding:6px 0; }
+.price-history ul { margin:8px 0; padding-left:18px; max-height:180px; overflow:auto; }
+.price-history-unchanged { margin-bottom:12px; }
