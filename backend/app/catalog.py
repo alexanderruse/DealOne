@@ -138,19 +138,25 @@ def refresh_catalog():
                     "message": "The merchant did not confirm a new observation. Previous timestamps are retained"}
 
 
+def approved_product(product):
+    return bool(product and product.source_kind == "merchant" and product.seller == "Keychron"
+                and product.source_url and any(product.source_url.startswith(
+                    f"https://www.keychron.com/products/{row[0]}?variant=") for row in SOURCES))
+
+
 def public_products(db):
     return [p for p in db.scalars(select(Product).where(Product.source_kind == "merchant", Product.seller == "Keychron").order_by(Product.id))
-            if p.source_url and any(p.source_url.startswith(f"https://www.keychron.com/products/{row[0]}?variant=") for row in SOURCES)]
+            if approved_product(p)]
 
 
 def requestable(product):
-    return bool(product and product.source_kind == "merchant" and product.stock_status == "in_stock"
+    return bool(approved_product(product) and product.stock_status == "in_stock"
                 and product.stock > 0 and product.price_checked_at
                 and product.price_checked_at > utcnow() - timedelta(seconds=180))
 
 
 def ensure_requestable(product):
-    if not product or product.source_kind != "merchant":
+    if not approved_product(product):
         raise ValueError("Only supported real merchant products can be requested")
     if product.stock_status == "sold_out":
         raise ValueError("This exact variant is sold out and cannot be requested")

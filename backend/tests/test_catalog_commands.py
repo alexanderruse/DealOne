@@ -73,3 +73,13 @@ def test_completed_grok_command_is_recorded_in_activity(client, monkeypatch):
     assert response.status_code == 200
     alerts = client.get("/api/notifications").json()
     assert len(alerts) == 1 and "find_product" in alerts[0]["message"]
+
+
+def test_unapproved_shopify_merchant_cannot_be_requested(client, db):
+    record = merchant_record()
+    record["source_url"] = "https://unapproved.myshopify.com/products/mouse?variant=1234"
+    db.add(Product(**record)); db.commit()
+    response = client.post("/api/permissions", json={"product_id": record["id"], "max_total_cents": 6000,
+        "expires_at": (utcnow()+timedelta(days=1)).isoformat()})
+    assert response.status_code == 409
+    assert client.get("/api/products").json() == []
