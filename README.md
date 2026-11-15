@@ -15,7 +15,7 @@ Sold-out variants cannot be requested. The backend checks the exact variant's la
 
 Active watches get refresh priority (target 130 seconds when capacity permits). Unwatched products are checked less often, preserving request capacity for user searches; **Check current availability** requests a fresh exact-variant check. Many simultaneous products can exceed public-feed capacity, in which case stale stock stays blocked. Partner-authorized Storefront APIs or merchant feeds are the next step for higher throughput.
 
-Price history contains only actual DealOne observations for each merchant variant. It begins when the product is imported; there is no invented earlier history. The dashboard displays observation counts, low/high prices and dates, with one batched history request rather than a request per product. Prices are USD item prices before merchant tax and shipping; sandbox totals never overwrite merchant prices or inventory.
+Price history contains only actual DealOne observations for each merchant variant. It begins when the product is imported; there is no invented earlier history. The dashboard displays observation counts, low/high prices and dates. It fetches histories for visible cards once per minute, with at most four requests in flight. Prices are USD item prices before merchant tax and shipping; sandbox totals never overwrite merchant prices or inventory.
 
 Grok uses `discover_products`, `inspect_product`, `find_product`, `get_price_history`, `get_activity`, and reviewed purchase tools. Commands update the live dashboard and leave an Activity entry; a search never creates a bank charge. Grok can draft rules with an explicit budget, but the user must activate them. Playwright remains confined to the controlled sandbox checkout. The interface uses permanent red/black theme tokens with dark text, larger type, and mobile layout checks.
 
@@ -28,7 +28,18 @@ docker compose up -d --build --wait
 
 Open **http://localhost:3001**. Docker Compose provides React/Caddy, FastAPI, a dedicated Chromium worker, and TimescaleDB. Production uses Tiger Cloud and the existing Vultr Kubernetes cluster. Data persists in the Docker database volume.
 
-Set `XAI_API_KEY` and `XAI_MODEL` for Grok. Without credentials, manual watch creation remains available. Real feeds must confirm an available variant before a new watch can be requested. An unavailable merchant produces an honest empty/unverified state rather than invented products.
+Set `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` for the shopping assistant. The example model is `google/gemini-3.8-flash`. Without credentials, manual watch creation remains available. Real feeds must confirm an available variant before a new watch can be requested. An unavailable merchant produces an honest empty/unverified state rather than invented products.
+
+## Local checkout capture
+
+With backend dependencies and Playwright Chromium installed in `backend/.venv`, run the checkout reproduction against the local Docker database.
+
+```sh
+docker compose up -d db
+backend/.venv/bin/python scripts/local_checkout_demo.py --analyze
+```
+
+The demo fills synthetic checkout details and ends before order submission. It saves masked screenshots, frame dimensions, input lengths, and the outcome under the ignored `infra/generated/local-checkout/` directory. Each run uses an isolated local database schema and removes it afterward. `--analyze` reviews the masked captures using the OpenRouter key and model in `.env`. Add `--headed` to watch the browser or `--url` to reproduce another product variant.
 
 ## Demonstration walkthrough
 

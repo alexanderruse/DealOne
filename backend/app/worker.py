@@ -58,6 +58,19 @@ CARD_SELECTORS = {
 }
 
 
+def rendered_payment_input(frame, selector):
+    """Ignore Shopify's tiny proxy inputs and paint the actual field on screen."""
+    for locator in frame.locator(selector).all():
+        box = locator.bounding_box()
+        if locator.is_visible() and box and box["width"] > 40 and box["height"] > 16:
+            if frame.parent_frame is not None:
+                frame.frame_element().scroll_into_view_if_needed(timeout=5000)
+            else:
+                locator.scroll_into_view_if_needed(timeout=5000)
+            return locator
+    return None
+
+
 def is_domain_approved(db, url: str) -> bool:
     netloc = urlparse(url).netloc.lower()
     approved = set(db.scalars(select(ApprovedDomain.domain)).all())
@@ -337,9 +350,9 @@ def run_checkout_demo(demo_id: str):
                         if field in payment_inputs:
                             continue
                         try:
-                            loc = frame.locator(selector).filter(visible=True).first
-                            if loc.count() and fill_verified_digits(loc, profile[field]):
-                                payment_inputs[field] = loc
+                            loc = rendered_payment_input(frame, selector)
+                            if loc is not None and fill_verified_digits(loc, profile[field]):
+                                payment_inputs[field] = (loc, frame)
                         except Exception:
                             # An address change may detach/recreate a hosted iframe.
                             pass
@@ -349,7 +362,7 @@ def run_checkout_demo(demo_id: str):
 
             page.wait_for_timeout(1000)
             # Verify again after asynchronous checkout updates; detached inputs do not count.
-            for field, loc in payment_inputs.items():
+            for field, (loc, frame) in payment_inputs.items():
                 try:
                     if (re.sub(r"\D", "", loc.input_value()) == re.sub(r"\D", "", profile[field])
                             and loc.get_attribute("aria-invalid") != "true"):
@@ -388,6 +401,7 @@ def run_checkout_demo(demo_id: str):
             for frame in page.frames:
                 try:
                     frame.evaluate('''() => {
+                        document.activeElement?.blur?.();
                         document.querySelectorAll('input').forEach(input => {
                             const idStr = ((input.name || '') + ' ' + (input.id || '') + ' ' + (input.placeholder || '')).toLowerCase();
                             if (['cc-number', 'cc-csc'].includes(input.autocomplete) ||
@@ -410,6 +424,14 @@ def run_checkout_demo(demo_id: str):
                     pass
 
             # STRICT SUBMISSION PREVENTION: NEVER CLICK PLACE ORDER OR SUBMIT
+            # Chromium may leave off-screen cross-origin frames unpainted in a
+            # full-page capture even after their input values were updated.
+            for locator, frame in payment_inputs.values():
+                if frame.parent_frame is not None:
+                    frame.frame_element().scroll_into_view_if_needed(timeout=5000)
+                else:
+                    locator.scroll_into_view_if_needed(timeout=5000)
+            page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
             page.screenshot(path=str(screenshot_path), full_page=True)
 
         except Exception as exc:

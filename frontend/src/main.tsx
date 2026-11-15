@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   ArrowDownRight,
@@ -158,6 +158,7 @@ function App() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [notices, setNotices] = useState<Notice[]>([]);
   const [histories, setHistories] = useState<Record<string, Observation[]>>({});
+  const refreshPending = useRef(false);
   const [page, setPage] = useState(window.location.pathname === '/screenshots' ? 'Evidence Gallery' : 'Overview');
   const [checkoutMode, setCheckoutMode] = useState<'merchant_handoff' | 'sandbox'>('merchant_handoff');
   const [sandboxTotal, setSandboxTotal] = useState('');
@@ -201,31 +202,30 @@ function App() {
   const nessieCards = watches.filter((w) => w.card?.nessie_account_id);
 
   async function refresh() {
-    const [p, w, o, n] = await Promise.all([
-      api<Product[]>('/products'),
-      api<Permission[]>('/permissions'),
-      api<Order[]>('/orders'),
-      api<Notice[]>('/notifications'),
-    ]);
-    setProducts(p);
-    setWatches(w.filter((watch) => p.some((product) => product.source_kind === 'merchant' && product.id === watch.product_id)));
-    setOrders(o);
-    setNotices(n);
-    const bankReads = Promise.all([
-      api<CardSummary>('/payments/card').then(setCardSummary).catch(() => setCardSummary(null)),
-      api<Ledger>('/payments/ledger').then(setLedger).catch(() => setLedger({ charges: [], nessie: [] })),
-      api<ApprovedDomain[]>('/demo/approved-domains').then(setApprovedDomains).catch(() => setApprovedDomains([])),
-      api<AIBudget>('/ai/budget').then(setAiBudget).catch(() => setAiBudget(null)),
-      api<CheckoutDemoRun[]>('/demo/checkout-demos').then(setCheckoutDemos).catch(() => setCheckoutDemos([])),
-    ]);
-    const history = await Promise.all(
-      p.map(
-        async (product) =>
-          [product.id, await api<Observation[]>(`/products/${product.id}/prices`)] as const,
-      ),
-    );
-    setHistories(Object.fromEntries(history));
-    await bankReads;
+    if (refreshPending.current) return;
+    refreshPending.current = true;
+    try {
+      const [p, w, o, n] = await Promise.all([
+        api<Product[]>('/products'),
+        api<Permission[]>('/permissions'),
+        api<Order[]>('/orders'),
+        api<Notice[]>('/notifications'),
+      ]);
+      setProducts(p);
+      setWatches(w.filter((watch) => p.some((product) => product.source_kind === 'merchant' && product.id === watch.product_id)));
+      setOrders(o);
+      setNotices(n);
+      const bankReads = Promise.all([
+        api<CardSummary>('/payments/card').then(setCardSummary).catch(() => setCardSummary(null)),
+        api<Ledger>('/payments/ledger').then(setLedger).catch(() => setLedger({ charges: [], nessie: [] })),
+        api<ApprovedDomain[]>('/demo/approved-domains').then(setApprovedDomains).catch(() => setApprovedDomains([])),
+        api<AIBudget>('/ai/budget').then(setAiBudget).catch(() => setAiBudget(null)),
+        api<CheckoutDemoRun[]>('/demo/checkout-demos').then(setCheckoutDemos).catch(() => {}),
+      ]);
+      await bankReads;
+    } finally {
+      refreshPending.current = false;
+    }
   }
   useEffect(() => {
     let active = true;
@@ -324,6 +324,34 @@ function App() {
   }
   const visibleProducts = products.filter((p) => p.source_kind === 'merchant'
     && `${p.name} ${p.category} ${p.seller} ${p.variant}`.toLowerCase().includes(catalogQuery.toLowerCase()));
+  const historyIds = (page === 'Overview' ? visibleProducts.slice(0, visibleLimit) : []).map((p) => p.id).join(',');
+  useEffect(() => {
+    let active = true;
+    let pending = false;
+    async function loadVisibleHistories() {
+      if (pending || !historyIds) return;
+      pending = true;
+      const queue = historyIds.split(',');
+      // Bound requests to the cards on screen, with at most four in flight.
+      const values: Record<string, Observation[]> = {};
+      try {
+        await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
+          while (active && queue.length) {
+            const id = queue.shift()!;
+            try {
+              values[id] = await api<Observation[]>(`/products/${id}/prices`);
+            } catch { /* Keep the previous chart during a transient failure. */ }
+          }
+        }));
+        if (active) setHistories((previous) => ({ ...previous, ...values }));
+      } finally {
+        pending = false;
+      }
+    }
+    loadVisibleHistories();
+    const timer = setInterval(loadVisibleHistories, 60000);
+    return () => { active = false; clearInterval(timer); };
+  }, [historyIds]);
   const SelectedIcon = selected ? icons[selected.icon as keyof typeof icons] || icons[selected.id as keyof typeof icons] || Package : Radar;
   const activeWatches = watches.filter((w) => w.status === 'active').length;
   const completed = orders.filter((o) => o.status === 'completed');

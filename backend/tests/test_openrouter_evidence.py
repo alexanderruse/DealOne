@@ -234,6 +234,30 @@ def test_flash_38_cost_fallback(monkeypatch):
     assert extract_cost(response) == 0.0045
 
 
+@pytest.mark.parametrize("nested_frame", [False, True])
+def test_payment_input_ignores_proxy_and_scrolls_into_view(nested_frame):
+    from html import escape
+    from playwright.sync_api import sync_playwright
+    from app.worker import rendered_payment_input
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page = browser.new_page(viewport={"width": 800, "height": 600})
+        inputs = '''<input name="expiry_month" style="width:2px;height:2px;padding:0;border:0">
+            <input name="expiry" style="width:200px;height:40px">'''
+        if nested_frame:
+            page.set_content(f'<div style="height:1500px"></div><iframe srcdoc="{escape(inputs, quote=True)}"></iframe>')
+            frame = page.frames[1]
+            frame.wait_for_selector('input[name="expiry"]')
+        else:
+            page.set_content('<div style="height:1500px"></div>' + inputs)
+            frame = page.main_frame
+        field = rendered_payment_input(frame, 'input[name*="expiry"]')
+        assert field is not None
+        assert field.get_attribute("name") == "expiry"
+        assert 0 <= field.bounding_box()["y"] < 600
+        browser.close()
+
+
 def test_unconfigured_openrouter_returns_503(client, monkeypatch):
     monkeypatch.setattr(settings(), "openrouter_api_key", "")
     monkeypatch.setattr(settings(), "xai_api_key", "")
