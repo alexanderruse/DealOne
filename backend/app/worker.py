@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import sys
 import time
 from datetime import timedelta
@@ -31,6 +32,43 @@ def get_screenshot_dir() -> Path:
         fallback = Path("/tmp/dealone/screenshots")
         fallback.mkdir(parents=True, exist_ok=True)
         return fallback
+
+
+def fill_verified_digits(locator, value: str) -> bool:
+    """Handle merchant input masks and verify the value after blur/rerender."""
+    expected = re.sub(r"\D", "", value)
+    for attempt in range(2):
+        if attempt:
+            locator.fill("")
+            locator.press_sequentially(value, delay=50)
+        else:
+            locator.fill(value)
+        locator.press("Tab")
+        actual = re.sub(r"\D", "", locator.input_value())
+        invalid = locator.get_attribute("aria-invalid") == "true"
+        if actual == expected and not invalid:
+            return True
+    return False
+
+
+CARD_SELECTORS = {
+    "card_number": 'input[autocomplete="cc-number"], input[name="number"], input[id="number"], input[placeholder*="Card number"]',
+    "card_expiry": 'input[autocomplete="cc-exp"], input[name*="expiry"], input[id*="expiry"], input[placeholder*="Expiration"], input[placeholder*="MM / YY"]',
+    "card_cvv": 'input[autocomplete="cc-csc"], input[name*="verification"], input[name*="cvv"], input[id*="verification"], input[id*="cvv"], input[placeholder*="Security code"]',
+}
+
+
+def rendered_payment_input(frame, selector):
+    """Ignore Shopify's tiny proxy inputs and paint the actual field on screen."""
+    for locator in frame.locator(selector).all():
+        box = locator.bounding_box()
+        if locator.is_visible() and box and box["width"] > 40 and box["height"] > 16:
+            if frame.parent_frame is not None:
+                frame.frame_element().scroll_into_view_if_needed(timeout=5000)
+            else:
+                locator.scroll_into_view_if_needed(timeout=5000)
+            return locator
+    return None
 
 
 def is_domain_approved(db, url: str) -> bool:
@@ -170,7 +208,7 @@ def run_checkout_demo(demo_id: str):
         "city": "New York",
         "state": "NY",
         "postal_code": "10001",
-        "phone": "555-0199",
+        "phone": "2015550199",
         "card_number": synthetic_card_number,
         "card_expiry": synthetic_expiry,
         "card_cvv": synthetic_cvv,
@@ -184,6 +222,18 @@ def run_checkout_demo(demo_id: str):
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         context = browser.new_context(viewport={"width": 1280, "height": 900}, device_scale_factor=2)
+        # Allow the cart and address UI, but never send a payment/order submission.
+        def prevent_submission(route):
+            request = route.request
+            path = urlparse(request.url).path.lower()
+            if request.method.upper() not in ("GET", "HEAD", "OPTIONS") and any(
+                term in path for term in ("/payments", "/sessions", "/orders", "/complete", "/process")
+            ):
+                route.abort()
+            else:
+                route.continue_()
+        context.route("**/*", prevent_submission)
+        context.add_init_script("document.addEventListener('submit', event => event.preventDefault(), true)")
         page = context.new_page()
         page.set_default_timeout(30_000)
 
@@ -283,55 +333,52 @@ def run_checkout_demo(demo_id: str):
 
             for sel in ['input[name="phone"]', 'input[type="tel"]', '#phone']:
                 if page.locator(f'{sel}:visible').count() > 0:
-                    page.locator(f'{sel}:visible').first.fill(profile["phone"])
-                    fields_completed.append("phone")
+                    phone_input = page.locator(f'{sel}:visible').first
+                    if fill_verified_digits(phone_input, profile["phone"]):
+                        fields_completed.append("phone")
                     break
 
             page.keyboard.press("Tab")
             page.wait_for_timeout(2000)
 
-            for frame in page.frames:
-                try:
-                    for c_sel in ['input[name*="number"]', 'input[id*="number"]', 'input[placeholder*="Card number"]', 'input[autocomplete="cc-number"]']:
-                        if frame.locator(f'{c_sel}:visible').count() > 0:
-                            loc = frame.locator(f'{c_sel}:visible').first
-                            loc.fill(profile["card_number"])
-                            try:
-                                loc.dispatch_event("change")
-                                loc.dispatch_event("blur")
-                            except Exception:
-                                pass
-                            if "card_number" not in fields_completed:
-                                fields_completed.append("card_number")
-                            break
-                    for e_sel in ['input[name*="expiry"]', 'input[id*="expiry"]', 'input[placeholder*="Expiration"]', 'input[placeholder*="MM / YY"]', 'input[autocomplete="cc-exp"]']:
-                        if frame.locator(f'{e_sel}:visible').count() > 0:
-                            loc = frame.locator(f'{e_sel}:visible').first
-                            loc.fill(profile["card_expiry"])
-                            try:
-                                loc.dispatch_event("change")
-                                loc.dispatch_event("blur")
-                            except Exception:
-                                pass
-                            if "card_expiry" not in fields_completed:
-                                fields_completed.append("card_expiry")
-                            break
-                    for v_sel in ['input[name*="verification"]', 'input[name*="cvv"]', 'input[id*="verification"]', 'input[id*="cvv"]', 'input[placeholder*="Security code"]', 'input[autocomplete="cc-csc"]']:
-                        if frame.locator(f'{v_sel}:visible').count() > 0:
-                            loc = frame.locator(f'{v_sel}:visible').first
-                            loc.fill(profile["card_cvv"])
-                            try:
-                                loc.dispatch_event("change")
-                                loc.dispatch_event("blur")
-                            except Exception:
-                                pass
-                            if "card_cvv" not in fields_completed:
-                                fields_completed.append("card_cvv")
-                            break
-                except Exception:
-                    pass
+            # Hosted payment frames often appear after shipping/address updates.
+            payment_inputs = {}
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                for frame in page.frames:
+                    for field, selector in CARD_SELECTORS.items():
+                        if field in payment_inputs:
+                            continue
+                        try:
+                            loc = rendered_payment_input(frame, selector)
+                            if loc is not None and fill_verified_digits(loc, profile[field]):
+                                payment_inputs[field] = (loc, frame)
+                        except Exception:
+                            # An address change may detach/recreate a hosted iframe.
+                            pass
+                if len(payment_inputs) == len(CARD_SELECTORS):
+                    break
+                page.wait_for_timeout(250)
 
             page.wait_for_timeout(1000)
+            # Verify again after asynchronous checkout updates; detached inputs do not count.
+            for field, (loc, frame) in payment_inputs.items():
+                try:
+                    if (re.sub(r"\D", "", loc.input_value()) == re.sub(r"\D", "", profile[field])
+                            and loc.get_attribute("aria-invalid") != "true"):
+                        fields_completed.append(field)
+                except Exception:
+                    pass
+            if "phone" in fields_completed:
+                try:
+                    if (re.sub(r"\D", "", phone_input.input_value()) != profile["phone"]
+                            or phone_input.get_attribute("aria-invalid") == "true"):
+                        fields_completed.remove("phone")
+                except Exception:
+                    fields_completed.remove("phone")
+            missing = [field for field in ("phone", *CARD_SELECTORS) if field not in fields_completed]
+            if missing:
+                blocker_reason = "Checkout fields unavailable or not validated: " + ", ".join(missing)
 
             all_texts = []
             try:
@@ -354,14 +401,12 @@ def run_checkout_demo(demo_id: str):
             for frame in page.frames:
                 try:
                     frame.evaluate('''() => {
+                        document.activeElement?.blur?.();
                         document.querySelectorAll('input').forEach(input => {
                             const idStr = ((input.name || '') + ' ' + (input.id || '') + ' ' + (input.placeholder || '')).toLowerCase();
-                            if (idStr.includes('number') || idStr.includes('card')) {
-                                if (input.value && input.value.length >= 4) {
-                                    input.value = '•••• •••• •••• ' + input.value.replace(/\\s/g, '').slice(-4);
-                                }
-                            } else if (idStr.includes('cvv') || idStr.includes('verification') || idStr.includes('security')) {
-                                input.value = '•••';
+                            if (['cc-number', 'cc-csc'].includes(input.autocomplete) ||
+                                /number|card|cvv|verification|security/.test(idStr)) {
+                                input.style.setProperty('-webkit-text-security', 'disc', 'important');
                             }
                         });
                         // Remove backdrop blur so the form behind any dialog remains sharp and clear
@@ -379,6 +424,14 @@ def run_checkout_demo(demo_id: str):
                     pass
 
             # STRICT SUBMISSION PREVENTION: NEVER CLICK PLACE ORDER OR SUBMIT
+            # Chromium may leave off-screen cross-origin frames unpainted in a
+            # full-page capture even after their input values were updated.
+            for locator, frame in payment_inputs.values():
+                if frame.parent_frame is not None:
+                    frame.frame_element().scroll_into_view_if_needed(timeout=5000)
+                else:
+                    locator.scroll_into_view_if_needed(timeout=5000)
+            page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
             page.screenshot(path=str(screenshot_path), full_page=True)
 
         except Exception as exc:
@@ -390,10 +443,11 @@ def run_checkout_demo(demo_id: str):
     with SessionLocal.begin() as db:
         demo = db.get(CheckoutDemoRun, demo_id)
         if demo:
-            demo.status = "completed"
+            demo.status = "blocked" if blocker_reason else "completed"
             demo.blocker_reason = blocker_reason
             demo.fields_completed = json.dumps(fields_completed)
             demo.screenshot_path = str(screenshot_path) if screenshot_path.exists() else None
+            demo.screenshot_png = screenshot_path.read_bytes() if screenshot_path.exists() else None
             demo.is_submitted = False  # STRICTLY FALSE
             demo.updated_at = utcnow()
 

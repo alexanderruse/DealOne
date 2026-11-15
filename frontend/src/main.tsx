@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   ArrowDownRight,
@@ -158,6 +158,7 @@ function App() {
   const [watches, setWatches] = useState<Permission[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [notices, setNotices] = useState<Notice[]>([]);
+  const refreshPending = useRef(false);
   const [page, setPage] = useState(window.location.pathname === '/screenshots' ? 'Evidence Gallery' : 'Overview');
   const [checkoutMode, setCheckoutMode] = useState<'merchant_handoff' | 'sandbox'>('merchant_handoff');
   const [sandboxTotal, setSandboxTotal] = useState('');
@@ -201,24 +202,30 @@ function App() {
   const nessieCards = watches.filter((w) => w.card?.nessie_account_id);
 
   async function refresh() {
-    const [p, w, o, n] = await Promise.all([
-      api<Product[]>('/products'),
-      api<Permission[]>('/permissions'),
-      api<Order[]>('/orders'),
-      api<Notice[]>('/notifications'),
-    ]);
-    setProducts(p);
-    setWatches(w.filter((watch) => p.some((product) => product.source_kind === 'merchant' && product.id === watch.product_id)));
-    setOrders(o);
-    setNotices(n);
-    const bankReads = Promise.all([
-      api<CardSummary>('/payments/card').then(setCardSummary).catch(() => setCardSummary(null)),
-      api<Ledger>('/payments/ledger').then(setLedger).catch(() => setLedger({ charges: [], nessie: [] })),
-      api<ApprovedDomain[]>('/demo/approved-domains').then(setApprovedDomains).catch(() => setApprovedDomains([])),
-      api<AIBudget>('/ai/budget').then(setAiBudget).catch(() => setAiBudget(null)),
-      api<CheckoutDemoRun[]>('/demo/checkout-demos').then(setCheckoutDemos).catch(() => setCheckoutDemos([])),
-    ]);
-    await bankReads;
+    if (refreshPending.current) return;
+    refreshPending.current = true;
+    try {
+      const [p, w, o, n] = await Promise.all([
+        api<Product[]>('/products'),
+        api<Permission[]>('/permissions'),
+        api<Order[]>('/orders'),
+        api<Notice[]>('/notifications'),
+      ]);
+      setProducts(p);
+      setWatches(w.filter((watch) => p.some((product) => product.source_kind === 'merchant' && product.id === watch.product_id)));
+      setOrders(o);
+      setNotices(n);
+      const bankReads = Promise.all([
+        api<CardSummary>('/payments/card').then(setCardSummary).catch(() => setCardSummary(null)),
+        api<Ledger>('/payments/ledger').then(setLedger).catch(() => setLedger({ charges: [], nessie: [] })),
+        api<ApprovedDomain[]>('/demo/approved-domains').then(setApprovedDomains).catch(() => setApprovedDomains([])),
+        api<AIBudget>('/ai/budget').then(setAiBudget).catch(() => setAiBudget(null)),
+        api<CheckoutDemoRun[]>('/demo/checkout-demos').then(setCheckoutDemos).catch(() => {}),
+      ]);
+      await bankReads;
+    } finally {
+      refreshPending.current = false;
+    }
   }
   useEffect(() => {
     let active = true;

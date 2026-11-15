@@ -29,13 +29,32 @@ class DeploymentTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True), self.assertRaises(RuntimeError):
             deploy.runtime_config()
         env = {"DATABASE_URL":"postgresql+psycopg://user:password@host/db?sslmode=require",
-               "SESSION_SECRET":"x"*32,"DEMO_ADMIN_TOKEN":"y"*24,"XAI_API_KEY":"test-key","XAI_MODEL":"sponsor-model"}
+               "SESSION_SECRET":"x"*32,"DEMO_ADMIN_TOKEN":"y"*24,
+               "OPENROUTER_API_KEY":"test-key","OPENROUTER_MODEL":"enabled-model"}
         with patch.dict(os.environ, env, clear=True):
             secret, config = deploy.runtime_config()
             self.assertNotIn('VULTR_API_KEY',secret)
             self.assertEqual(config['PAYMENTS_MODE'],'simulation')
             self.assertEqual(config['REAL_CATALOG_ENABLED'], 'true')
             self.assertEqual(config['APP_DOMAIN'],'dealone.work')
+            self.assertEqual(secret['OPENROUTER_API_KEY'], 'test-key')
+            self.assertNotIn('OPENROUTER_API_KEY', config)
+            self.assertEqual(config['OPENROUTER_MODEL'], 'enabled-model')
+            self.assertEqual(config['AI_BUDGET_USD'], '20')
+            self.assertEqual(config['AI_BUDGET_WINDOW_SECONDS'], '10800')
+        with patch.dict(os.environ, {**env, 'AI_BUDGET_USD': '5.5', 'AI_BUDGET_WINDOW_SECONDS': '3600'}, clear=True):
+            _, config = deploy.runtime_config()
+            self.assertEqual(config['AI_BUDGET_USD'], '5.5')
+            self.assertEqual(config['AI_BUDGET_WINDOW_SECONDS'], '3600')
+        for name in ('OPENROUTER_API_KEY', 'OPENROUTER_MODEL'):
+            with self.subTest(missing=name), patch.dict(os.environ, {**env, name: ''}, clear=True):
+                with self.assertRaisesRegex(RuntimeError, name):
+                    deploy.runtime_config()
+        for name, value in (('AI_BUDGET_USD', 'nan'), ('AI_BUDGET_USD', '-1'),
+                            ('AI_BUDGET_WINDOW_SECONDS', '0'), ('AI_BUDGET_WINDOW_SECONDS', '3.5')):
+            with self.subTest(name=name, value=value), patch.dict(os.environ, {**env, name: value}, clear=True):
+                with self.assertRaisesRegex(RuntimeError, 'AI_BUDGET'):
+                    deploy.runtime_config()
         bad = {**env, "DATABASE_URL": "postgresql+psycopg://user:password@host/db?sslmode=disable"}
         with patch.dict(os.environ, bad, clear=True), self.assertRaises(RuntimeError):
             deploy.runtime_config()

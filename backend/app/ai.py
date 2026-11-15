@@ -93,7 +93,10 @@ def extract_cost(response) -> float:
                 pt = getattr(response.usage, "prompt_tokens", 0)
                 ct = getattr(response.usage, "completion_tokens", 0)
                 if isinstance(pt, (int, float)) and isinstance(ct, (int, float)) and (pt or ct):
-                    cost = (pt * 0.10 + ct * 0.40) / 1_000_000
+                    # Prefer provider-reported cost above. Fallback uses the selected
+                    # model's standard rates rather than Flash-Lite rates for 3.8.
+                    input_rate, output_rate = (0.75, 3.75) if settings().openrouter_model == "google/gemini-3.8-flash" else (0.10, 0.40)
+                    cost = (pt * input_rate + ct * output_rate) / 1_000_000
         return round(cost, 6)
     except Exception:
         return 0.0

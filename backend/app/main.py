@@ -6,7 +6,7 @@ from pathlib import Path
 import secrets
 from uuid import uuid4
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
@@ -570,12 +570,13 @@ def trigger_checkout_demo(body: CheckoutDemoRequest, background_tasks: Backgroun
 
 @app.get("/api/demo/checkout-demos")
 def list_checkout_demos(db: Session = Depends(get_db)):
-    runs = list(db.scalars(select(CheckoutDemoRun).order_by(CheckoutDemoRun.created_at.desc()).limit(50)))
+    runs = db.execute(select(CheckoutDemoRun, CheckoutDemoRun.screenshot_png.is_not(None))
+                      .order_by(CheckoutDemoRun.created_at.desc()).limit(50)).all()
     results = []
-    for r in runs:
+    for r, stored_screenshot in runs:
         product = db.get(Product, r.product_id)
         card = db.get(VirtualCard, r.permission_id)
-        has_screenshot = bool(r.screenshot_path and Path(r.screenshot_path).exists())
+        has_screenshot = bool(stored_screenshot or (r.screenshot_path and Path(r.screenshot_path).exists()))
         fields = []
         try:
             fields = json.loads(r.fields_completed) if r.fields_completed else []
@@ -598,6 +599,8 @@ def get_screenshot_file(demo_id: str, db: Session = Depends(get_db)):
     demo = db.get(CheckoutDemoRun, demo_id)
     if not demo:
         raise HTTPException(404, "Evidence run not found")
+    if demo.screenshot_png:
+        return Response(content=demo.screenshot_png, media_type="image/png")
     from .worker import get_screenshot_dir
     p = Path(demo.screenshot_path) if demo.screenshot_path else (get_screenshot_dir() / f"{demo_id}.png")
     if not p.exists():
@@ -610,12 +613,13 @@ def get_screenshot_file(demo_id: str, db: Session = Depends(get_db)):
 
 @app.get("/screenshots", response_class=HTMLResponse)
 def view_screenshots_page(db: Session = Depends(get_db)):
-    runs = list(db.scalars(select(CheckoutDemoRun).order_by(CheckoutDemoRun.created_at.desc()).limit(30)))
+    runs = db.execute(select(CheckoutDemoRun, CheckoutDemoRun.screenshot_png.is_not(None))
+                      .order_by(CheckoutDemoRun.created_at.desc()).limit(30)).all()
     cards_html = []
-    for r in runs:
+    for r, stored_screenshot in runs:
         product = db.get(Product, r.product_id)
         card = db.get(VirtualCard, r.permission_id)
-        has_screenshot = bool(r.screenshot_path and Path(r.screenshot_path).exists())
+        has_screenshot = bool(stored_screenshot or (r.screenshot_path and Path(r.screenshot_path).exists()))
         fields = []
         try:
             fields = json.loads(r.fields_completed) if r.fields_completed else []

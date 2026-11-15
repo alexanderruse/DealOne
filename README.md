@@ -28,7 +28,18 @@ docker compose up -d --build --wait
 
 Open **http://localhost:3001**. Docker Compose provides React/Caddy, FastAPI, a dedicated Chromium worker, and TimescaleDB. Production uses Tiger Cloud and the existing Vultr Kubernetes cluster. Data persists in the Docker database volume.
 
-Set `XAI_API_KEY` and `XAI_MODEL` for Grok. Without credentials, manual watch creation remains available. Real feeds must confirm an available variant before a new watch can be requested. An unavailable merchant produces an honest empty/unverified state rather than invented products.
+Set `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` for the shopping assistant. The example model is `google/gemini-3.8-flash`. Without credentials, manual watch creation remains available. Real feeds must confirm an available variant before a new watch can be requested. An unavailable merchant produces an honest empty/unverified state rather than invented products.
+
+## Local checkout capture
+
+With backend dependencies and Playwright Chromium installed in `backend/.venv`, run the checkout reproduction against the local Docker database.
+
+```sh
+docker compose up -d db
+backend/.venv/bin/python scripts/local_checkout_demo.py --analyze
+```
+
+The demo fills synthetic checkout details and ends before order submission. It saves masked screenshots, frame dimensions, input lengths, and the outcome under the ignored `infra/generated/local-checkout/` directory. Each run uses an isolated local database schema and removes it afterward. `--analyze` reviews the masked captures using the OpenRouter key and model in `.env`. Add `--headed` to watch the browser or `--url` to reproduce another product variant.
 
 ## Demonstration walkthrough
 

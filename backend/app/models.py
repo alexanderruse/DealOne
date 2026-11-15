@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from uuid import uuid4
-from sqlalchemy import Boolean, DateTime, Float, JSON, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, JSON, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from .db import Base
 
@@ -172,6 +172,7 @@ class CheckoutDemoRun(Base):
     nessie_verified_limit_cents: Mapped[int] = mapped_column(Integer, default=0)
     fields_completed: Mapped[str] = mapped_column(Text, default="[]")  # JSON encoded list of completed fields
     screenshot_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    screenshot_png: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True, deferred=True)
     is_submitted: Mapped[bool] = mapped_column(Boolean, default=False)  # strictly False
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
