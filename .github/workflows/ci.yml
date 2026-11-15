@@ -28,7 +28,6 @@ jobs:
           echo REAL_CATALOG_ENABLED=false >> .env
           echo APP_ENV=test >> .env
           docker compose up -d --build --wait
-          docker compose exec -T api python -m tests.seed_real_catalog
       - name: Backend policy, API, recovery, and concurrency tests
         run: docker compose exec -T api python -m pytest -q tests
       - name: Browser acceptance tests
@@ -38,6 +37,7 @@ jobs:
           DEMO_ADMIN_TOKEN: local-demo-admin
         run: |
           npx playwright install --with-deps chromium
+          docker compose exec -T api python -m tests.seed_real_catalog
           npm run test:e2e
       - name: Validate Kubernetes manifests and deployment scripts
         run: |

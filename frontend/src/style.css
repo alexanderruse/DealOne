@@ -343,7 +343,7 @@ h1 {
   color: var(--brand-navy);
 }
 .page-title p {
-  font-size: 15px;
+  font-size: 16px;
   color: var(--muted);
   margin-top: 8px;
   max-width: 52ch;

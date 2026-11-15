@@ -1,12 +1,13 @@
 import { test, expect, type Page } from '@playwright/test';
-const mouseId = 'keychron-44549379883097';
-const mouseUrl = `https://www.keychron.com/products/keychron-m3-wireless-mouse?variant=${mouseId}`;
+const mouseVariant = '44549379883097';
+const mouseId = `keychron-${mouseVariant}`;
+const mouseUrl = `https://www.keychron.com/products/keychron-m3-wireless-mouse?variant=${mouseVariant}`;
 
 async function checkLink(page: Page, url = mouseUrl, soldOut = false) {
   await page.route('**/api/catalog/inspect', async (route) => {
     const response = await page.request.get('/api/products');
     const products = (await response.json()).filter((product: { id: string }) =>
-      product.id.endsWith(new URL(url).searchParams.get('variant') || mouseId));
+      product.id === `keychron-${new URL(url).searchParams.get('variant')}`);
     await route.fulfill({ json: { status: 'complete', message: 'Verified', products: soldOut
       ? products.map((product: object) => ({ ...product, can_request: false, stock_status: 'sold_out' }))
       : products } });
