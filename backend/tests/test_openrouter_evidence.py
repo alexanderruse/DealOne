@@ -5,12 +5,51 @@ from unittest.mock import Mock, patch
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.ai import check_and_reserve_budget, fail_budget_spend, get_ai_budget_summary, settle_budget_spend
 from app.config import settings
 from app.models import AISpendRecord, ApprovedDomain, CheckoutDemoRun, Permission, Product, VirtualCard, utcnow
 from app.worker import is_domain_approved, run_checkout_demo
+
+
+def test_checkout_recovery_skips_active_run_and_retries_interruption_once(db, factory):
+    from app.worker import DEMO_RECOVERY_DELAY, process_queued_demo_runs
+
+    product = db.scalar(select(Product).limit(1))
+    permission = Permission(owner="checkout-recovery-test", product_id=product.id,
+                            variant=product.variant, seller=product.seller, condition=product.condition,
+                            currency=product.currency, quantity=1, max_total_cents=10000,
+                            expires_at=utcnow() + timedelta(days=1), status="active")
+    db.add(permission)
+    db.flush()
+    stale_time = utcnow() - DEMO_RECOVERY_DELAY - timedelta(seconds=10)
+    demo = CheckoutDemoRun(permission_id=permission.id, owner=permission.owner, product_id=product.id,
+                           trigger_type="manual_admin", status="running", updated_at=stale_time)
+    db.add(demo)
+    db.commit()
+
+    with patch("app.worker.SessionLocal", factory), patch("app.worker.capture_checkout_demo") as capture:
+        with factory.begin() as active_runner:
+            active_runner.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                                  {"key": f"checkout-demo:{demo.id}"})
+            process_queued_demo_runs()
+            capture.assert_not_called()
+
+        process_queued_demo_runs()
+        capture.assert_called_once_with(demo.id)
+        db.refresh(demo)
+        assert demo.status == "running"
+
+        # Simulate the recovery process dying before it can finalize the demo.
+        demo.updated_at = stale_time
+        db.commit()
+        process_queued_demo_runs()
+        capture.assert_called_once()
+        db.refresh(demo)
+        assert demo.status == "failed"
+        assert "interrupted again" in demo.blocker_reason
+        assert not demo.is_submitted
 
 
 def test_ai_budget_enforcement_and_rolling_recovery(db):

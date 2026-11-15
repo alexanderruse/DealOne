@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
-from sqlalchemy import select, text, update
+from sqlalchemy import select, text
 from .config import settings
 from .db import SessionLocal
 from .models import (Permission, Product, Order, MerchantOrder, Heartbeat, PriceObservation,
@@ -697,24 +697,48 @@ def scan():
             event("purchase_not_eligible", permission_id=permission_id, reason=str(exc))
 
 
+DEMO_RECOVERY_DELAY = timedelta(minutes=5)
+DEMO_RETRY_REASON = "Retrying checkout after an interrupted run"
+
+
 def run_checkout_demo(demo_id: str):
-    with SessionLocal.begin() as db:
-        claimed = db.execute(update(CheckoutDemoRun).where(
-            CheckoutDemoRun.id == demo_id, CheckoutDemoRun.status == "queued"
-        ).values(status="running", updated_at=utcnow())).rowcount
-    if not claimed:
-        return
-    try:
-        capture_checkout_demo(demo_id)
-    except Exception:
-        log.exception("Checkout demo failed")
+    # Keep a separate transaction open while the demo runs. PostgreSQL releases
+    # its lock if the API or worker process dies.
+    with SessionLocal.begin() as lock_db:
+        acquired = lock_db.scalar(
+            text("SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"checkout-demo:{demo_id}"},
+        )
+        if not acquired:
+            return
         with SessionLocal.begin() as db:
-            demo = db.get(CheckoutDemoRun, demo_id)
+            demo = db.get(CheckoutDemoRun, demo_id, with_for_update=True)
             if demo is None:
                 return
-            demo.status = "failed"
-            demo.blocker_reason = "Could not run the checkout demonstration"
-            demo.updated_at = utcnow()
+            now = utcnow()
+            if demo.status == "running" and demo.updated_at <= now - DEMO_RECOVERY_DELAY:
+                if demo.blocker_reason == DEMO_RETRY_REASON:
+                    demo.status = "failed"
+                    demo.blocker_reason = "Checkout was interrupted again during recovery"
+                    demo.updated_at = now
+                    return
+                demo.blocker_reason = DEMO_RETRY_REASON
+                event("checkout_demo_retried", demo_id=demo_id)
+            elif demo.status != "queued":
+                return
+            demo.status = "running"
+            demo.updated_at = now
+        try:
+            capture_checkout_demo(demo_id)
+        except Exception:
+            log.exception("Checkout demo failed")
+            with SessionLocal.begin() as db:
+                demo = db.get(CheckoutDemoRun, demo_id)
+                if demo is None:
+                    return
+                demo.status = "failed"
+                demo.blocker_reason = "Could not run the checkout demonstration"
+                demo.updated_at = utcnow()
 
 
 def capture_payment_closeup(page, payment_inputs, profile):
@@ -1106,7 +1130,12 @@ def process_order(order_id):
 
 def process_queued_demo_runs():
     with SessionLocal() as db:
-        queued_ids = list(db.scalars(select(CheckoutDemoRun.id).where(CheckoutDemoRun.status == "queued").limit(5)))
+        ready = CheckoutDemoRun.status == "queued"
+        interrupted = (CheckoutDemoRun.status == "running") & (
+            CheckoutDemoRun.updated_at <= utcnow() - DEMO_RECOVERY_DELAY
+        )
+        queued_ids = list(db.scalars(select(CheckoutDemoRun.id).where(ready | interrupted)
+                                    .order_by(CheckoutDemoRun.updated_at).limit(5)))
     for run_id in queued_ids:
         try:
             run_checkout_demo(run_id)
