@@ -70,7 +70,8 @@ def assistant(text, db, owner):
                "Never present a sandbox transaction as a merchant order. Sold-out or unverified items cannot be requested. "
                "Never invent listings, prices or purchase confirmations. "
                "User permissions: " + json.dumps([serialize(p) for p in db.scalars(
-                   select(Permission).where(Permission.owner == owner))], default=str)),
+                   select(Permission).where(Permission.owner == owner, Permission.product_id.in_(
+                       select(Product.id).where(Product.source_kind == "merchant"))))], default=str)),
         user(text),
     ], tools=[tool(name=name, description=description, parameters=schema.model_json_schema())
               for name, description, schema in definitions])
