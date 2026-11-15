@@ -15,6 +15,8 @@ class Rules(StrictModel):
 
 
 class ActivateRequest(StrictModel):
+    checkout_mode: Literal["merchant_handoff", "sandbox"] = "merchant_handoff"
+    sandbox_total_cents: int | None = Field(default=None, gt=0, le=1_000_000)
     # Default is ask-first: activation watches, it does not auto-buy.
     purchase_mode: Literal["ask_first", "auto_buy"] = "ask_first"
 

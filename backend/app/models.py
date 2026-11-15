@@ -31,6 +31,7 @@ class Product(Base):
     # Seller/listing text is untrusted data. The trap product stores bait here on purpose.
     description: Mapped[str] = mapped_column(Text, default="")
 
+    stock_status: Mapped[str] = mapped_column(String(20), default="unknown")
     source_kind: Mapped[str] = mapped_column(String(20), default="demo")
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -60,6 +61,8 @@ class Permission(Base):
     max_total_cents: Mapped[int] = mapped_column(Integer)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     # ask_first (default): notify when the price matches; auto_buy: worker may purchase.
+    checkout_mode: Mapped[str] = mapped_column(String(30), default="legacy")
+    sandbox_total_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     purchase_mode: Mapped[str] = mapped_column(String(20), default="ask_first")
     status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

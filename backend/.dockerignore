@@ -2,3 +2,5 @@ __pycache__
 .pytest_cache
 .venv
 .env
+# Local editor/Finder backup copies are not importable runtime modules.
+**/* [0-9].py

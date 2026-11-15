@@ -1,9 +1,5 @@
-from .db import SessionLocal
-from .services import seed
+"""Populate only real merchant products. Fictional fixtures live exclusively in tests."""
+from .catalog import refresh_catalog
 
 if __name__ == "__main__":
-    with SessionLocal.begin() as db:
-        seed(db)
-
-    from .catalog import refresh_catalog
     refresh_catalog()

@@ -10,7 +10,7 @@ from app import worker
 
 def merchant_record():
     return parse_product({"product": {"title": "Keychron M3 Wireless Mouse", "variants": [
-        {"id": 1234, "title": "Black / 1K", "price": "49.99", "price_currency": "USD"}],
+        {"id": 1234, "title": "Black / 1K", "price": "49.99", "price_currency": "USD", "available": True}],
         "images": [{"src": "https://cdn.shopify.com/mouse.png"}]}}, *SOURCES[1])
 
 
@@ -19,7 +19,8 @@ def test_feed_price_is_exact_and_variant_has_canonical_link():
     assert p["price_cents"] == 4999
     assert p["source_url"] == "https://www.keychron.com/products/keychron-m3-wireless-mouse?variant=1234"
     assert p["icon"] == "mouse"
-    assert p["stock"] == 0  # Inventory is unknown in this feed, never invented.
+    assert p["stock"] == 1
+    assert p["stock_status"] == "in_stock"
 
 
 def test_cent_feed_and_variant_artwork():
@@ -112,7 +113,7 @@ def test_grok_can_parse_catalog_with_real_price_timestamps(db, monkeypatch):
     assert exc.value.status_code == 422
 
 
-def test_products_omit_merchant_when_real_catalog_disabled(client, db, monkeypatch):
+def test_disabling_polling_never_reintroduces_fictional_products(client, db, monkeypatch):
     from app import config
     record = merchant_record()
     db.add(Product(**record))
@@ -120,7 +121,8 @@ def test_products_omit_merchant_when_real_catalog_disabled(client, db, monkeypat
     monkeypatch.setenv("REAL_CATALOG_ENABLED", "false")
     config.settings.cache_clear()
     payload = client.get("/api/products").json()
-    assert all(p["source_kind"] != "merchant" for p in payload)
+    assert [p["id"] for p in payload] == [record["id"]]
+    assert all(p["source_kind"] == "merchant" for p in payload)
     assert client.get("/api/session").json()["real_catalog_enabled"] is False
     monkeypatch.setenv("REAL_CATALOG_ENABLED", "true")
     config.settings.cache_clear()

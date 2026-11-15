@@ -36,16 +36,22 @@ def scan():
                     notify(db, permission.owner, f"expired:{permission.id}", "Your purchase permission expired without a purchase.")
                     continue
                 product = db.get(Product, permission.product_id)
-                if product.source_kind == "merchant":
-                    if product.price_checked_at and product.price_checked_at > utcnow() - timedelta(minutes=15) and product.price_cents <= permission.max_total_cents:
+                if product.source_kind == "merchant" and permission.checkout_mode != "sandbox":
+                    if product.stock_status == "in_stock" and product.stock > 0 and product.price_checked_at and product.price_checked_at > utcnow() - timedelta(minutes=15) and product.price_cents <= permission.max_total_cents:
                         notify(db, permission.owner, f"merchant:{permission.id}:{product.price_cents}",
                                f"Price alert: {product.name} is ${product.price_cents/100:.2f} at {product.seller}. Tax, shipping and availability need confirmation at the store. Open the listing to review.")
                     continue
-                if total(product) <= permission.max_total_cents:
+                if product.source_kind != "merchant" and settings().app_env != "test":
+                    continue
+                from .catalog import requestable
+                if product.source_kind == "merchant" and not requestable(product):
+                    continue
+                from .services import checkout_total
+                if checkout_total(permission, product) <= permission.max_total_cents:
                     if permission.purchase_mode == "ask_first":
                         # Alert once; never purchase until the user explicitly approves.
                         notify(db, permission.owner, f"offer:{permission.id}",
-                               f"Price matched your rules: {product.name} is ${total(product)/100:.2f} all in. "
+                               f"Sandbox scenario ready: {product.name}, ${checkout_total(permission, product)/100:.2f} test total. "
                                "Approve the purchase when you are ready.")
                     else:
                         prepare_order(db, permission.id)
@@ -95,7 +101,7 @@ def process_order(order_id):
                 order.updated_at = utcnow()
             try:
                 browser_checkout(order_id)
-                event("purchase_completed", order_id=order_id, payment_mode="simulation")
+                event("purchase_completed", order_id=order_id, payment_mode=settings().payments_mode)
             except Exception as exc:
                 with SessionLocal.begin() as db:
                     order = db.get(Order, order_id)

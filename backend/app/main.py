@@ -80,7 +80,7 @@ async def bank_unavailable(request, exc):
 
 @app.get("/api/health/live")
 def live():
-    return {"status": "ok", "payments": settings().payments_mode}
+    return {"status": "ok", "payments": settings().payments_mode, "real_catalog_enabled": settings().real_catalog_enabled}
 
 
 @app.get("/api/health/ready")
@@ -102,12 +102,7 @@ def worker_health(db: Session = Depends(get_db)):
 
 @app.get("/api/session")
 def session(user: str = Depends(owner)):
-    return {
-        "session_id": user,
-        "grok_configured": bool(settings().xai_api_key),
-        "payments": settings().payments_mode,
-        "real_catalog_enabled": settings().real_catalog_enabled,
-    }
+    return {"session_id": user, "grok_configured": bool(settings().xai_api_key), "payments": settings().payments_mode, "real_catalog_enabled": settings().real_catalog_enabled}
 
 
 @app.get("/api/payments/card")
@@ -138,6 +133,17 @@ def payment_cards(user: str = Depends(owner), db: Session = Depends(get_db)):
     return [permission_view(permission, card) for permission, card in rows]
 
 
+@app.get("/api/payments/cards/{permission_id}/verify")
+def verify_payment_card(permission_id: str, user: str = Depends(owner), db: Session = Depends(get_db)):
+    permission = db.get(Permission, permission_id)
+    card = db.get(VirtualCard, permission_id)
+    if not permission or permission.owner != user or not card:
+        raise HTTPException(404, "Permission card not found")
+    if settings().payments_mode != "nessie" or not card.nessie_account_id:
+        raise HTTPException(409, "This card uses the local simulator, not the Nessie API")
+    return {**payments.provider.card(card.nessie_account_id), "last4": card.last4, "verified_at": utcnow()}
+
+
 @app.get("/api/payments/ledger")
 def payment_ledger(user: str = Depends(owner), db: Session = Depends(get_db)):
     """DealOne bank-charge rows plus live Nessie sandbox transactions for this workspace."""
@@ -159,10 +165,8 @@ def payment_ledger(user: str = Depends(owner), db: Session = Depends(get_db)):
 
 @app.get("/api/products")
 def products(db: Session = Depends(get_db)):
-    rows = list(db.scalars(select(Product).order_by(Product.id)))
-    if not settings().real_catalog_enabled:
-        rows = [p for p in rows if p.source_kind != "merchant"]
-    return [product_view(p) for p in rows]
+    from .catalog import public_products
+    return [product_view(p) for p in public_products(db)]
 
 
 @app.get("/api/products/{product_id}/prices")
@@ -199,12 +203,17 @@ def create_permission(body: Rules, user: str = Depends(owner), db: Session = Dep
     product = db.get(Product, body.product_id)
     if not product:
         raise HTTPException(404, "Product not found")
+    from .catalog import revalidate_product
+    try:
+        revalidate_product(db, product)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
     if body.expires_at.tzinfo is None or body.expires_at <= utcnow() or body.expires_at > utcnow()+timedelta(days=30):
         raise HTTPException(422, "Choose a timezone-aware expiration within the next 30 days")
     permission = Permission(owner=user, product_id=product.id, variant=product.variant, seller=product.seller,
                             condition=product.condition, currency=product.currency, quantity=body.quantity,
                             max_total_cents=body.max_total_cents, expires_at=body.expires_at,
-                            purchase_mode="ask_first", status="draft")
+                            purchase_mode="ask_first", checkout_mode="merchant_handoff" if product.source_kind == "merchant" else "legacy", status="draft")
     db.add(permission)
     db.commit()
     return permission_view(permission)
@@ -227,10 +236,23 @@ def activate(permission_id: str, body: ActivateRequest | None = None, user: str 
         raise HTTPException(404, "Permission not found")
     if permission.status != "draft" or permission.expires_at <= utcnow():
         raise HTTPException(409, "Only an unexpired draft can be activated")
+    from .catalog import revalidate_product
+    product = db.get(Product, permission.product_id)
+    try:
+        revalidate_product(db, product)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    if product.source_kind == "merchant":
+        permission.checkout_mode = body.checkout_mode
+        if body.checkout_mode == "sandbox":
+            amount = body.sandbox_total_cents or product.price_cents
+            if amount > permission.max_total_cents:
+                raise HTTPException(409, "Sandbox checkout total exceeds the approved maximum")
+            permission.sandbox_total_cents = amount
     permission.purchase_mode = body.purchase_mode
     permission.status = "active"
     try:
-        card = issue_card(db, permission)
+        card = issue_card(db, permission) if permission.checkout_mode != "merchant_handoff" else None
     except PaymentUnavailable as exc:
         db.rollback()
         raise HTTPException(503, f"Could not issue sandbox card: {exc}") from None
@@ -269,7 +291,7 @@ def orders(user: str = Depends(owner), db: Session = Depends(get_db)):
         open_window = o.status == "completed" and cancel_deadline(o) > utcnow()
         results.append({**serialize(o), "payment_reference": authorization.token if authorization else None,
                         "bank_status": charge.status if charge else (authorization.status if authorization else None),
-                        "cancellable_until": cancel_deadline(o) if open_window else None})
+                        "cancellable_until": cancel_deadline(o) if open_window else None, "merchant_order_placed": False, "checkout_mode": db.get(Permission, o.permission_id).checkout_mode})
     return results
 
 
@@ -299,6 +321,8 @@ def change_price(product_id: str, body: PriceChange, db: Session = Depends(get_d
         raise HTTPException(404, "Product not found")
     if product.source_kind == "merchant":
         raise HTTPException(409, "Real merchant prices can only change through the merchant feed")
+    if settings().app_env != "test":
+        raise HTTPException(410, "Fictional demo products are retired. Use a sandbox total on a real product instead")
     product.price_cents = body.price_cents
     if body.shipping_cents is not None:
         product.shipping_cents = body.shipping_cents
@@ -369,8 +393,8 @@ def checkout(order_id: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "Order not found")
     permission = db.get(Permission, order.permission_id)
     product = db.get(Product, permission.product_id)
-    return f'''<!doctype html><html><head><title>DealOne Demo Checkout</title></head><body>
-      <h1>Demo storefront · simulated payment</h1><h2>{escape(product.name)}</h2>
+    return f'''<!doctype html><html><head><title>DealOne Sandbox Checkout</title></head><body>
+      <h1>Sandbox checkout for a real product · no merchant order</h1><h2>{escape(product.name)}</h2>
       <p>{escape(product.variant)}</p><p data-testid="total">{order.total_cents}</p>
       <button id="submit-order">Place simulated order</button><pre id="result"></pre>
       <script>document.querySelector('#submit-order').onclick = async () => {{

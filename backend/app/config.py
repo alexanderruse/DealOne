@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     resend_from_email: str = ""
     storefront_url: str = "http://api:8000"
     worker_interval_seconds: int = 10
-    real_catalog_enabled: bool = False
+    real_catalog_enabled: bool = True
     payments_mode: str = "simulation"
     nessie_api_key: str = ""
     nessie_base_url: str = "https://v2-prod-api.nessieisreal.com"

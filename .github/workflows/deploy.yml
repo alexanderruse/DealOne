@@ -33,14 +33,14 @@ jobs:
       SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
       DEMO_ADMIN_TOKEN: ${{ secrets.DEMO_ADMIN_TOKEN }}
       XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+      NESSIE_API_KEY: ${{ secrets.NESSIE_API_KEY }}
+      NESSIE_CUSTOMER_ID: ${{ vars.NESSIE_CUSTOMER_ID }}
+      NESSIE_MERCHANT_ID: ${{ vars.NESSIE_MERCHANT_ID }}
+      NESSIE_CARD_ACCOUNT_ID: ${{ vars.NESSIE_CARD_ACCOUNT_ID }}
       XAI_MODEL: ${{ vars.XAI_MODEL }}
       APP_DOMAIN: dealone.work
       RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
       RESEND_FROM_EMAIL: ${{ vars.RESEND_FROM_EMAIL }}
-      NESSIE_API_KEY: ${{ secrets.NESSIE_API_KEY }}
-      NESSIE_CUSTOMER_ID: ${{ vars.NESSIE_CUSTOMER_ID }}
-      NESSIE_CARD_ACCOUNT_ID: ${{ vars.NESSIE_CARD_ACCOUNT_ID }}
-      NESSIE_MERCHANT_ID: ${{ vars.NESSIE_MERCHANT_ID }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,6 +48,8 @@ jobs:
       - uses: azure/setup-kubectl@v4
       - uses: azure/setup-helm@v4.3.0
         with: {version: v3.17.3}
+      - name: Connect Nessie sandbox customer and merchant
+        run: python3 scripts/nessie_setup.py
       - name: Validate runtime configuration
         run: |
           python3 - <<'PY'

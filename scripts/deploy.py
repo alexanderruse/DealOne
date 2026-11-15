@@ -43,7 +43,7 @@ def runtime_config():
         raise RuntimeError("Nessie production mode requires NESSIE_MERCHANT_ID")
     config = {"APP_ENV": "production", "APP_DOMAIN": os.getenv("APP_DOMAIN", "dealone.work"),
               "XAI_MODEL": os.environ["XAI_MODEL"], "PAYMENTS_MODE": "nessie" if nessie else "simulation",
-              "REAL_CATALOG_ENABLED": "false",
+              "REAL_CATALOG_ENABLED": "true",
               "NESSIE_CARD_ACCOUNT_ID": os.getenv("NESSIE_CARD_ACCOUNT_ID", ""),
               "NESSIE_CUSTOMER_ID": os.getenv("NESSIE_CUSTOMER_ID", ""),
               "NESSIE_MERCHANT_ID": os.getenv("NESSIE_MERCHANT_ID", ""),

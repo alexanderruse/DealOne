@@ -69,6 +69,8 @@ class FakeBank:
             return httpx.Response(201, json=customer)
         if method == "POST" and path.startswith("/customers/") and path.endswith("/accounts"):
             body = json.loads(request.content)
+            # Nessie v2 AccountCreateDTO rejects additional properties, including metadata.
+            assert set(body) <= {"type", "nickname", "credit_limit_cents", "balance_cents", "rewards"}
             account_id = f"acct_{self.account_seq}"
             self.account_seq += 1
             limit = int(body.get("credit_limit_cents", self.default_limit))
