@@ -294,8 +294,11 @@ def open_demo_checkout(page, target_url, *, linked_offer, allowance, evidence, a
         cookie_dialog = page.locator('[id*="cookie" i], [id*="consent" i], [id*="onetrust" i]').get_by_role(
             "button", name=re.compile(r"^(?:accept|accept all(?: cookies)?|reject|reject all(?: cookies)?)$", re.I))
         failed_labels = set()
+        visible_add = actions.filter(visible=True)
+        if visible_add.count() == 1:
+            cart = click_add(visible_add)
         for _ in range(3):
-            if remaining_ms() < 11000:
+            if attempted_add or remaining_ms() < 11000:
                 break
             controls = actions.or_(dismiss).or_(cookie_dialog).filter(visible=True)
             labels = controls.evaluate_all("nodes => nodes.slice(0, 8).map(el => (el.innerText || el.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim().slice(0, 120))")
@@ -326,6 +329,12 @@ def open_demo_checkout(page, target_url, *, linked_offer, allowance, evidence, a
             if cart and cart[0]:
                 break
         if not attempted_add and remaining_ms() >= 8500 and urlparse(page.url).netloc == merchant.netloc:
+            visible_add = actions.filter(visible=True)
+            if visible_add.count() == 1:
+                try:
+                    visible_add.scroll_into_view_if_needed(timeout=min(1200, remaining_ms()))
+                except PlaywrightError:
+                    pass
             control = visual_cart_control(page, handle, remaining_ms)
             if control is not None:
                 try:
