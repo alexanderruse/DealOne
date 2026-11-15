@@ -10,7 +10,9 @@ test('watch, authorize, detect a drop, and buy exactly once', async ({ page, req
   await expect(
     page.getByRole('heading', { name: 'Set your price. Stay in control.' }),
   ).toBeVisible();
-  await page.getByRole('button', { name: 'Practice checkout', exact: true }).click();
+  // Real catalog is off by default: demo products show with no Practice checkout tab.
+  await expect(page.getByRole('button', { name: 'Practice checkout', exact: true })).toHaveCount(0);
+  await expect(page.locator('.product-card')).toHaveCount(4);
   await page.getByRole('button', { name: 'Watch this item' }).first().click();
   await page.getByLabel('Maximum total, including tax & shipping (USD)').fill('180');
   await page.getByRole('button', { name: 'Review purchase rules' }).click();
