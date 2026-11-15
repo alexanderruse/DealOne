@@ -14,20 +14,24 @@ from tests.test_purchasing import permission
 
 
 def test_activate_defaults_to_ask_first_and_issues_a_dedicated_card(client, db):
+    from tests.test_merchant_catalog import merchant_record
+    record = merchant_record()
+    db.add(Product(**record))
+    db.commit()
     expires = (utcnow() + timedelta(days=1)).isoformat()
-    created = client.post("/api/permissions", json={"product_id": "headphones", "max_total_cents": 18000,
+    created = client.post("/api/permissions", json={"product_id": record["id"], "max_total_cents": 18000,
                                                     "expires_at": expires}).json()
     assert created["purchase_mode"] == "ask_first"
-    activated = client.post(f"/api/permissions/{created['id']}/activate").json()
+    activated = client.post(f"/api/permissions/{created['id']}/activate", json={"checkout_mode": "sandbox", "sandbox_total_cents": 5000}).json()
     assert activated["purchase_mode"] == "ask_first"
     assert activated["status"] == "active"
     assert activated["card"]["limit_cents"] == 18000
     assert activated["card"]["status"] == "issued"
     assert len(activated["card"]["last4"]) == 4
-    other = client.post("/api/permissions", json={"product_id": "speaker", "max_total_cents": 12000,
+    other = client.post("/api/permissions", json={"product_id": record["id"], "max_total_cents": 12000,
                                                   "expires_at": expires}).json()
     second = client.post(f"/api/permissions/{other['id']}/activate",
-                         json={"purchase_mode": "auto_buy"}).json()
+                         json={"purchase_mode": "auto_buy", "checkout_mode": "sandbox", "sandbox_total_cents": 5000}).json()
     assert second["purchase_mode"] == "auto_buy"
     assert second["card"]["limit_cents"] == 12000
     assert second["card"]["last4"] != activated["card"]["last4"]

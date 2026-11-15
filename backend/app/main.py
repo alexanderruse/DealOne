@@ -108,8 +108,10 @@ def session(user: str = Depends(owner)):
 @app.get("/api/payments/card")
 def payment_card(user: str = Depends(owner), db: Session = Depends(get_db)):
     # Backward-compatible summary. Prefer /api/payments/cards for per-permission cards.
-    cards = list(db.scalars(select(VirtualCard).join(Permission).where(Permission.owner == user)))
-    issued = [c for c in cards if c.status == "issued"]
+    cards = list(db.scalars(select(VirtualCard).join(Permission).where(
+        Permission.owner == user, Permission.checkout_mode == "sandbox")))
+    active_ids = set(db.scalars(select(Permission.id).where(Permission.owner == user, Permission.status == "active")))
+    issued = [c for c in cards if c.status == "issued" and c.permission_id in active_ids]
     summary = {
         "provider": settings().payments_mode,
         "card_count": len(cards),
@@ -189,13 +191,26 @@ def parse(body: ParseRequest, user: str = Depends(owner), db: Session = Depends(
 @app.post("/api/assistant")
 def assistant(body: AssistantRequest, user: str = Depends(owner), db: Session = Depends(get_db)):
     from .ai import assistant
+    from .catalog import refresh_catalog
     try:
-        return assistant(body.text, db, user)
+        inventory = refresh_catalog()
+        db.expire_all()
+        result = assistant(body.text, db, user)
+        tools = ", ".join(call["tool"] for call in result["tools"]) or "answered without tools"
+        db.add(Notification(owner=user, event_key=f"grok:{uuid4()}", message=f"Grok command: {body.text[:160]} · {tools}. Inventory: {inventory['status']}."))
+        db.commit()
+        return {**result, "inventory": inventory}
     except HTTPException:
         raise
     except Exception:
         db.rollback()
         raise HTTPException(502, "Grok request failed. Your purchase rules remain enforced.")
+
+
+@app.post("/api/catalog/refresh")
+def refresh_merchant_catalog(user: str = Depends(owner)):
+    from .catalog import refresh_catalog
+    return refresh_catalog()
 
 
 @app.post("/api/permissions", status_code=201)

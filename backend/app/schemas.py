@@ -39,6 +39,11 @@ class ProductReference(StrictModel):
 
 class SearchRequest(StrictModel):
     query: str = Field(max_length=150)
+    availability: Literal["all", "in_stock", "sold_out"] = "all"
+
+
+class EmptyRequest(StrictModel):
+    pass
 
 
 class PriceChange(StrictModel):

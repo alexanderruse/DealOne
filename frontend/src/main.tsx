@@ -118,7 +118,6 @@ function App() {
   const [notices, setNotices] = useState<Notice[]>([]);
   const [histories, setHistories] = useState<Record<string, Observation[]>>({});
   const [page, setPage] = useState('Overview');
-  const catalogMode = 'merchant';
   const [checkoutMode, setCheckoutMode] = useState<'merchant_handoff' | 'sandbox'>('merchant_handoff');
   const [sandboxTotal, setSandboxTotal] = useState('');
   const [bankEvidence, setBankEvidence] = useState<{last4: string; credit_limit_cents: number; available_cents: number; verified_at: string} | null>(null);
@@ -131,6 +130,8 @@ function App() {
   const [ledger, setLedger] = useState<Ledger>({ charges: [], nessie: [] });
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Product | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [inventoryStatus, setInventoryStatus] = useState('');
   const [budget, setBudget] = useState('180');
   const [deadline, setDeadline] = useState('7');
   const [parsedExpiration, setParsedExpiration] = useState<string | null>(null);
@@ -159,12 +160,12 @@ function App() {
     setOrders(o);
     setNotices(n);
     // Card summary / ledger are extra; a bank hiccup must never blank the rest of the page.
-    api<CardSummary>('/payments/card')
+    const bankReads = Promise.all([api<CardSummary>('/payments/card')
       .then(setCardSummary)
-      .catch(() => setCardSummary(null));
+      .catch(() => setCardSummary(null)),
     api<Ledger>('/payments/ledger')
       .then(setLedger)
-      .catch(() => setLedger({ charges: [], nessie: [] }));
+      .catch(() => setLedger({ charges: [], nessie: [] }))]);
     const history = await Promise.all(
       p.map(
         async (product) =>
@@ -172,6 +173,7 @@ function App() {
       ),
     );
     setHistories(Object.fromEntries(history));
+    await bankReads;
   }
   useEffect(() => {
     let active = true;
@@ -202,6 +204,7 @@ function App() {
       await refresh();
     } catch (e) {
       setError((e as Error).message);
+      await refresh().catch(() => {});
     } finally {
       setBusy(false);
     }
@@ -209,6 +212,8 @@ function App() {
   function openWatch(p: Product, mode: 'merchant_handoff' | 'sandbox' = 'merchant_handoff') {
     if (!p.can_request) { setError('This variant is sold out or its availability is unverified.'); return; }
     setCheckoutMode(mode);
+    setPickerOpen(false);
+    setError('');
     setSandboxTotal((p.price_cents * 0.9 / 100).toFixed(2));
     setSelected(p);
     setBudget(String(Math.round((p.price_cents * 0.9) / 100)));
@@ -300,7 +305,7 @@ function App() {
           <div className="profile">
             <span className="profile-avatar">Y</span>
             <div>
-              Signed in<small>Hackathon preview</small>
+              Signed in<small>Your price watches</small>
             </div>
             <CircleHelp size={17} />
           </div>
@@ -313,7 +318,6 @@ function App() {
             Account <ChevronRight size={13} /> <strong>{page}</strong>
           </div>
           <div className="header-right">
-            <span className="preview-badge">HACKATHON PREVIEW</span>
             <button
               aria-label="View notifications"
               onClick={() => setPage('Activity')}
@@ -348,7 +352,7 @@ function App() {
                       : 'Describe what you want. We’ll match it to a catalog item you can watch.'}
               </p>
             </div>
-            <Button onClick={() => products.find((p) => p.can_request) && openWatch(products.find((p) => p.can_request)!)}>
+            <Button onClick={() => { const p = products.find((p) => p.can_request); if (p) openWatch(p); else setPickerOpen(true); }}>
               <Plus size={17} />
               Start a watch
             </Button>
@@ -455,7 +459,7 @@ function App() {
                       </p>
                     </div>
                     <span className="live-label">
-                      <i /> {catalogMode === 'merchant' ? 'Merchant feeds · every 5 min' : 'Practice checks · every 10 sec'}
+                      <i /> Merchant snapshots · refreshes paced by store
                     </span>
                   </div>
                   {page === 'Watchlist' && (
@@ -564,6 +568,11 @@ function App() {
                     </label>
                   </div>
                   <p className="catalog-disclosure">Real products from one approved store. The merchant confirms stock for each variant. Sold-out or unverified items cannot be requested. Nessie sandbox mode demonstrates banking without placing a merchant order. Banking provider: {payments === 'nessie' ? 'Nessie v2 API' : 'local simulator (Nessie not connected)'}.</p>
+                  <Button variant="outline" disabled={busy} onClick={() => run(async () => {
+                    const result = await api<{message: string}>('/catalog/refresh', {method: 'POST'});
+                    setInventoryStatus(result.message);
+                  })}>Refresh merchant inventory</Button>
+                  {inventoryStatus && <p role="status" className="fineprint">{inventoryStatus}</p>}
                   {visibleProducts.length === 0 && <div className="empty"><Package /><h3>{catalogQuery ? 'No matching items yet.' : 'Waiting for merchant prices.'}</h3><p>{catalogQuery ? 'Try another product name or ask Grok about the supported catalog.' : 'Merchant data may be temporarily unavailable. No products will be invented while the merchant is unavailable.'}</p></div>}
                   <section className="product-grid">
                     {visibleProducts.map((p) => {
@@ -625,7 +634,7 @@ function App() {
                               </div>
                             </div>
                             {p.source_kind === 'merchant' && <div className="merchant-provenance">
-                              <span>{p.price_checked_at ? `Checked ${new Date(p.price_checked_at).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})}${Date.now() - new Date(p.price_checked_at).getTime() > 900000 ? ' · refresh delayed' : ''}` : 'Price not checked'}</span>
+                              <span>{p.price_checked_at ? `Checked ${new Date(p.price_checked_at).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})}${Date.now() - new Date(p.price_checked_at).getTime() > 180000 ? ' · refresh delayed' : ''}` : 'Price not checked'}</span>
                               <a href={p.source_url || undefined} target="_blank" rel="noopener noreferrer">View at {p.seller} <ArrowUpRight size={13} /></a>
                             </div>}
                             <p className={`availability ${p.stock_status}`}>{p.can_request ? 'Available to order · merchant verified' : p.stock_status === 'sold_out' ? 'Sold out · cannot request' : 'Availability unverified · cannot request'}</p>
@@ -768,14 +777,22 @@ function App() {
                     onSubmit={(e) => {
                       e.preventDefault();
                       run(async () => {
-                        const result = await api<{ message: string; tools: { tool: string; result: unknown }[] }>(
+                        const result = await api<{ message: string; inventory?: {message: string}; tools: { tool: string; result: unknown }[] }>(
                           '/assistant',
                           { method: 'POST', body: JSON.stringify({ text: chat }) },
                         );
                         setAnswer(result.message);
                         setToolCalls(result.tools.map((t) => t.tool));
+                        setInventoryStatus(result.inventory?.message || '');
                         setRecommendations([...new Set(result.tools.filter((t) => t.tool === 'find_product' && Array.isArray(t.result))
-                          .flatMap((t) => (t.result as Product[]).map((p) => p.id)).filter((id) => products.some((p) => p.id === id)))]);
+                          .flatMap((t) => (t.result as Product[]).map((p) => p.id)))]);
+                        const created = result.tools.find((t) => t.tool === 'create_watch_draft' && (t.result as Permission)?.status === 'draft');
+                        if (created) {
+                          const permission = created.result as Permission;
+                          const catalog = await api<Product[]>('/products');
+                          const product = catalog.find((p) => p.id === permission.product_id);
+                          if (product?.can_request) { openWatch(product); setBudget(String(permission.max_total_cents / 100)); setDraft(permission); }
+                        }
                       });
                     }}
                   >
@@ -803,8 +820,8 @@ function App() {
                   {recommendations.length > 0 && <div className="grok-products" aria-label="Grok product matches">
                     {products.filter((p) => recommendations.includes(p.id)).map((p) => <div className="grok-product" key={p.id}>
                       <ProductVisual key={p.id} product={p} compact />
-                      <div><strong>{p.name}</strong><small>{p.seller} · {money(p.price_cents)}</small></div>
-                      <Button onClick={() => openWatch(p)}>Watch this item</Button>
+                      <div><strong>{p.name}</strong><small>{p.variant} · {p.seller} · {money(p.price_cents)} · {p.can_request ? 'Available' : p.stock_status === 'sold_out' ? 'Sold out' : 'Availability unverified'}</small></div>
+                      <Button disabled={!p.can_request} onClick={() => openWatch(p)}>Watch this item</Button>
                     </div>)}
                   </div>}
                   <p className="fineprint">
@@ -823,6 +840,14 @@ function App() {
         </main>
       </div>
 
+      {pickerOpen && <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="picker-title">
+        <button className="modal-close" aria-label="Close item picker" onClick={() => setPickerOpen(false)}><X size={21} /></button>
+        <h2 id="picker-title">Choose an available item</h2>
+        <p>No recently verified, available variants can be requested right now. Sold-out items remain visible so you can check their status.</p>
+        {products.map((p) => <div className="selected-product" key={p.id}><ProductVisual product={p} compact /><div><strong>{p.name}</strong><small>{p.variant} · {p.can_request ? 'Available' : p.stock_status === 'sold_out' ? 'Sold out' : 'Availability unverified'}</small></div><Button disabled={!p.can_request} onClick={() => openWatch(p)}>Watch this item</Button></div>)}
+        <Button disabled={busy} onClick={() => run(async () => { const result = await api<{message: string}>('/catalog/refresh', {method:'POST'}); setInventoryStatus(result.message); })}>Check merchant availability</Button>
+        <p role="status">{inventoryStatus || 'The merchant may limit refresh frequency. We never substitute invented stock.'}</p>
+      </section></div>}
       {selected && (
         <div className="modal-backdrop">
           <section className="modal" role="dialog" aria-modal="true" aria-labelledby="watch-title">
@@ -839,6 +864,7 @@ function App() {
             <h2 id="watch-title">
               {draft ? 'Confirm your purchase rules' : 'Set your price and limit'}
             </h2>
+            {error && <p role="alert" className="error">{error}</p>}
             <p>
               {selected.name} · {selected.variant}
             </p>
