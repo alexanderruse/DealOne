@@ -22,12 +22,17 @@ jobs:
       - name: Check approved merchant responses inside the API pod
         run: |
           kubectl exec -i deployment/api -n dealone -- python -u - <<'PY'
-          import httpx
+          import httpx, time
           from app.catalog import SOURCES, parse_product
+          client=httpx.Client(timeout=12)
           for source in SOURCES:
               try:
-                  response = httpx.get('https://www.keychron.com/products/'+source[0]+'.js',params={'currency':'USD'},timeout=12)
+                  response = client.get('https://www.keychron.com/products/'+source[0]+'.js',params={'currency':'USD'},timeout=12)
                   print(source[0],response.status_code,response.headers.get('content-type'),response.headers.get('retry-after'))
+                  if response.status_code==429:
+                      time.sleep(2)
+                      response=client.get('https://www.keychron.com/products/'+source[0]+'.js',params={'currency':'USD'},timeout=12)
+                      print('Same URL after two-second backoff:',source[0],response.status_code)
                   if response.status_code==200:
                       payload=response.json()
                       print('Variant availability:',[(v.get('id'),v.get('available')) for v in payload.get('variants',[])])
