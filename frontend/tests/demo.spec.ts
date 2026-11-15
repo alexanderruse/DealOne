@@ -67,7 +67,7 @@ test('desktop overview renders without browser errors', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1050 });
   await page.goto('/');
   await page.getByRole('button', { name: 'Practice checkout', exact: true }).click();
-  await expect(page.locator('.product-card')).toHaveCount(3);
+  await expect(page.locator('.product-card')).toHaveCount(4);
   await page.screenshot({ path: 'test-results/dealone-desktop.png', fullPage: true });
   expect(errors).toEqual([]);
 });
@@ -85,9 +85,9 @@ test('Grok changes the selected product artwork and real watches explain merchan
   await page.route('**/api/rules/parse', route => route.fulfill({ json: { product_id: product.id,
     max_total_cents: 4500, quantity: 1, expires_at: new Date(Date.now() + 86400000).toISOString() } }));
   await page.goto('/');
+  await page.getByRole('button', { name: 'Real stores', exact: true }).click();
   await expect(page.locator('.product-card').filter({hasText: product.name})).toBeVisible();
   await expect(page.getByRole('link', {name: 'View at Keychron'})).toHaveAttribute('href', product.source_url);
-  await page.getByRole('button', {name: 'Practice checkout', exact: true}).click();
   await page.getByRole('button', {name: 'Watch this item'}).first().click();
   await page.getByLabel('Describe it to Grok', {exact: false}).fill('Watch the Keychron mouse under $45 for a day');
   await page.getByRole('button', {name: 'Fill my rules'}).click();
