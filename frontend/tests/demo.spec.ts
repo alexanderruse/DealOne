@@ -64,6 +64,8 @@ test('desktop overview renders without browser errors', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Practice checkout', exact: true }).click();
   await expect(page.locator('.product-card')).toHaveCount(3);
+  await expect(page.locator('.product-card').filter({hasText:'Studio Wireless Headphones'}).locator('.lucide-headphones')).toBeVisible();
+  await expect(page.locator('.product-card').filter({hasText:'Mechanical Keyboard'}).locator('.lucide-keyboard')).toBeVisible();
   await page.screenshot({ path: 'test-results/dealone-desktop.png', fullPage: true });
   expect(errors).toEqual([]);
 });

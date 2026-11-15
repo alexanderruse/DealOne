@@ -73,7 +73,7 @@ type Rules = { product_id: string; max_total_cents: number; expires_at: string; 
 const icons = { headphones: Headphones, keyboard: Keyboard, speaker: AudioLines, mouse: Mouse, package: Package };
 function ProductVisual({ product, compact = false }: { product: Product; compact?: boolean }) {
   const [failed, setFailed] = useState(false);
-  const Icon = icons[product.icon as keyof typeof icons] || icons[product.id as keyof typeof icons] || Package;
+  const Icon = icons[product.id as keyof typeof icons] || icons[product.icon as keyof typeof icons] || Package;
   return product.image_url && !failed ? (
     <img className={compact ? 'product-photo compact' : 'product-photo'} src={product.image_url}
       alt={`${product.name} · ${product.variant}`} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
@@ -188,7 +188,7 @@ function App() {
   }
   const visibleProducts = products.filter((p) => (p.source_kind || 'demo') === catalogMode
     && `${p.name} ${p.category} ${p.seller} ${p.variant}`.toLowerCase().includes(catalogQuery.toLowerCase()));
-  const SelectedIcon = selected ? icons[selected.icon as keyof typeof icons] || icons[selected.id as keyof typeof icons] || Package : Radar;
+  const SelectedIcon = selected ? icons[selected.id as keyof typeof icons] || icons[selected.icon as keyof typeof icons] || Package : Radar;
   const activeWatches = watches.filter((w) => w.status === 'active').length;
   const completed = orders.filter((o) => o.status === 'completed');
   const committed = watches
