@@ -250,6 +250,34 @@ def test_checkout_cart_checks_quantity_allowance_and_discount(quantity, allowanc
         assert "Admin preview continued" in evidence["preview_warning"]
 
 
+@pytest.mark.parametrize("admin_preview", [False, True])
+def test_missing_cart_only_allows_admin_preview_to_attempt_checkout(admin_preview):
+    from app.worker import open_demo_checkout
+
+    target = "https://merchant.example/products/soap"
+    checkout = "https://merchant.example/checkout"
+    page = Mock(url=target)
+    page.request.get.return_value.ok = False
+
+    def navigate(url, **kwargs):
+        page.url = url
+
+    page.goto.side_effect = navigate
+    evidence = {}
+    args = dict(linked_offer=False, allowance=4100, evidence=evidence,
+                admin_preview=admin_preview, checkout_hosts={"merchant.example"})
+    if admin_preview:
+        open_demo_checkout(page, target, **args)
+        assert page.url == checkout
+        assert "did not provide a cart" in evidence["preview_warning"]
+        assert "cart_total_cents" not in evidence
+    else:
+        with pytest.raises(ValueError, match="did not provide a cart"):
+            open_demo_checkout(page, target, **args)
+        assert page.url == target
+        assert not evidence
+
+
 def test_checkout_field_suggestions_only_fill_known_contact_controls(factory):
     from app.worker import complete_demo_contact_fields
 

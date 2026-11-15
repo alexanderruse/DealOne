@@ -250,6 +250,14 @@ def open_demo_checkout(page, target_url, *, linked_offer, allowance, evidence, a
     if urlparse(page.url).netloc != merchant.netloc:
         raise ValueError("The storefront redirected the browser away before Add to Cart was available")
 
+    def report_cart_problem(message):
+        if not admin_preview:
+            raise ValueError(message)
+        warning = evidence.get("preview_warning", "")
+        evidence["preview_warning"] = " ".join(filter(None, (
+            warning, f"{message}. Admin preview continued for screenshots only.",
+        )))
+
     def read_cart():
         try:
             return storefront_cart(page.request.get(f"{base}/cart.js", timeout=min(2500, remaining_ms()), max_redirects=0))
@@ -350,20 +358,31 @@ def open_demo_checkout(page, target_url, *, linked_offer, allowance, evidence, a
                     pass
 
     if not attempted_add and variant:
-        response = page.request.post(f"{base}/cart/add.js", data={"id": variant, "quantity": 1},
-                                     timeout=min(6000, remaining_ms()), max_redirects=0)
-        if not response.ok:
-            raise ValueError("Merchant did not confirm the selected variant in the cart")
+        try:
+            response = page.request.post(f"{base}/cart/add.js", data={"id": variant, "quantity": 1},
+                                         timeout=min(6000, remaining_ms()), max_redirects=0)
+        except PlaywrightError:
+            if not admin_preview:
+                raise
+            report_cart_problem("Merchant cart request failed")
+        else:
+            if not response.ok:
+                report_cart_problem("Merchant did not confirm the selected variant in the cart")
     if not cart or not cart[0]:
         cart = read_cart()
-    item, checkout_url = verify_demo_cart(cart, handle=handle, variant=variant, allowance=allowance,
-                                          evidence=evidence, admin_preview=admin_preview)
-    if linked_offer and remaining_ms() >= 6500:
+    item = None
+    checkout_url = cart[3] if cart else None
+    try:
+        item, checkout_url = verify_demo_cart(cart, handle=handle, variant=variant, allowance=allowance,
+                                              evidence=evidence, admin_preview=admin_preview)
+    except ValueError as exc:
+        report_cart_problem(str(exc))
+    if item and linked_offer and remaining_ms() >= 6500:
         review = checkout_suggestion(
             'Does the cart match the watched item and quantity? Return only {"correct": true} or {"correct": false}.',
             {"expected": {"handle": handle, "variant": variant, "quantity": 1}, "cart": item}, timeout=4)
         if review.get("correct") is False:
-            raise ValueError("Gemini flagged a mismatch in the prepared checkout cart")
+            report_cart_problem("Gemini flagged a mismatch in the prepared checkout cart")
 
     checkout_target = https_url(checkout_url) if checkout_url else f"{base}/checkout"
     checkout_host = urlparse(checkout_target).hostname
