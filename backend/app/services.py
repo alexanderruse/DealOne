@@ -29,7 +29,9 @@ def serialize(record):
 
 
 def product_view(product):
+    from .catalog import requestable
     return {**serialize(product), "total_cents": total(product),
+            "can_request": requestable(product), "merchant_order_placed": False,
             "contains_hidden_instructions": bool(product.description and HIDDEN_INSTRUCTION_BAIT[:40] in product.description)}
 
 
@@ -84,9 +86,25 @@ def mark_bank_decline(db, order, permission, reason):
     return order
 
 
+def checkout_total(permission, product):
+    if permission.checkout_mode == "sandbox":
+        if permission.sandbox_total_cents is None or permission.sandbox_total_cents <= 0:
+            raise PurchaseRejected("A reviewed sandbox checkout total is required")
+        return permission.sandbox_total_cents
+    return total(product)
+
+
 def validate_purchase(permission, product):
+    from .catalog import ensure_requestable
     if product.source_kind == "merchant":
-        raise PurchaseRejected("Live merchant checkout is not connected. Open the merchant listing to buy.")
+        try:
+            ensure_requestable(product)
+        except ValueError as exc:
+            raise PurchaseRejected(str(exc)) from None
+        if permission.checkout_mode != "sandbox":
+            raise PurchaseRejected("Live merchant checkout is not connected. Open the merchant listing to buy.")
+    elif settings().app_env != "test":
+        raise PurchaseRejected("Legacy demonstration products are no longer supported")
     if permission.status != "active":
         raise PurchaseRejected("Purchase permission is not active")
     if permission.expires_at <= utcnow():
@@ -98,7 +116,7 @@ def validate_purchase(permission, product):
             raise PurchaseRejected(f"Product {field} no longer matches your permission")
     if product.stock < 1:
         raise PurchaseRejected("Product is out of stock")
-    if total(product) > permission.max_total_cents:
+    if checkout_total(permission, product) > permission.max_total_cents:
         raise PurchaseRejected("Final total including tax and shipping exceeds your budget")
 
 
@@ -137,6 +155,11 @@ def prepare_order(db, permission_id, owner=None):
     if existing:
         return existing
     product = db.get(Product, permission.product_id)
+    from .catalog import revalidate_product
+    try:
+        revalidate_product(db, product)
+    except ValueError as exc:
+        raise PurchaseRejected(str(exc)) from None
     validate_purchase(permission, product)
     reviewed = db.scalar(select(Notification).where(Notification.owner == permission.owner,
                                                     Notification.event_key == reviewed_key(permission.id)))
@@ -147,11 +170,11 @@ def prepare_order(db, permission_id, owner=None):
                f"Paused for your review: {product.name} is ${total(product)/100:.2f}, less than half its usual "
                "price. Deals this far below the tracked price can be scams.")
         return None
-    order = Order(permission_id=permission.id, owner=permission.owner, total_cents=total(product))
+    order = Order(permission_id=permission.id, owner=permission.owner, total_cents=checkout_total(permission, product))
     db.add(order)
     db.flush()
     notify(db, permission.owner, f"drop:{permission.id}",
-           f"Price target reached: {product.name} is ${total(product)/100:.2f} all in. Preparing your purchase.")
+           f"Sandbox checkout ready: {product.name}, ${checkout_total(permission, product)/100:.2f} test total. No merchant order will be placed.")
     return order
 
 
@@ -168,14 +191,19 @@ def complete_order(db, order_id):
     if order.status not in ("pending", "submitting", "uncertain"):
         raise PurchaseRejected("Order is not eligible for submission")
     product = db.scalar(select(Product).where(Product.id == permission.product_id).with_for_update())
+    from .catalog import revalidate_product
+    try:
+        revalidate_product(db, product)
+    except ValueError as exc:
+        raise PurchaseRejected(str(exc)) from None
     validate_purchase(permission, product)
     # A changed checkout total requires a fresh quote instead of silently changing the order.
-    if total(product) != order.total_cents:
+    if checkout_total(permission, product) != order.total_cents:
         raise PurchaseRejected("Checkout total changed; review and create a new permission")
     card = db.scalar(select(VirtualCard).where(VirtualCard.permission_id == permission.id).with_for_update())
     if not card or card.status != "issued":
         raise PurchaseRejected("No active virtual card for this permission")
-    charge = total(product)
+    charge = checkout_total(permission, product)
     if charge > card.limit_cents:
         raise PurchaseRejected("Charge exceeds this permission's card limit")
     try:
@@ -186,9 +214,10 @@ def complete_order(db, order_id):
         mark_bank_decline(db, order, permission, str(exc))
         raise PurchaseRejected(f"Card declined: {exc}") from None
     card.status = "spent"
-    merchant = MerchantOrder(order_id=order.id, confirmation="DO-" + order.id[:8].upper(), total_cents=charge)
+    merchant = MerchantOrder(order_id=order.id, confirmation=("SANDBOX-" if permission.checkout_mode == "sandbox" else "DO-") + order.id[:8].upper(), total_cents=charge)
     db.add(merchant)
-    product.stock -= 1
+    if product.source_kind != "merchant":
+        product.stock -= 1
     db.flush()
     return reconcile_order(db, order, merchant)
 
@@ -224,7 +253,8 @@ def cancel_order(db, order_id, owner):
     merchant = db.get(MerchantOrder, order.id)
     if merchant:
         db.delete(merchant)
-    product.stock += 1
+    if product.source_kind != "merchant":
+        product.stock += 1
     order.status = "cancelled"
     order.updated_at = utcnow()
     permission.status = "cancelled"
@@ -287,7 +317,7 @@ def reconcile_order(db, order, merchant):
     else:
         paid_with = f"virtual card •••• {card.last4}" if card else "simulated card"
     notify(db, order.owner, f"receipt:{order.id}",
-           f"Purchase complete on {paid_with}. Receipt {merchant.confirmation} · ${merchant.total_cents/100:.2f}.")
+           f"Sandbox transaction complete on {paid_with}. No merchant order was placed. Receipt {merchant.confirmation} · ${merchant.total_cents/100:.2f}.")
     return order
 
 

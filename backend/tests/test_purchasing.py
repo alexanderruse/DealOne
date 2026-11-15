@@ -192,7 +192,13 @@ def test_internal_and_demo_routes_are_protected(client):
 
 
 def test_production_browser_worker_can_submit_from_internal_origin(client, db, monkeypatch):
-    rule = permission(db)
+    from tests.test_merchant_catalog import merchant_record
+    from app import catalog
+    record = merchant_record()
+    db.add(Product(**record)); db.commit()
+    rule = permission(db, product_id=record["id"], variant=record["variant"], seller="Keychron",
+                      checkout_mode="sandbox", sandbox_total_cents=5000)
+    monkeypatch.setattr(catalog, "revalidate_product", lambda session, product: catalog.ensure_requestable(product))
     order = prepare_order(db, rule.id)
     db.commit()
     monkeypatch.setattr(settings(), "app_env", "production")

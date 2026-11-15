@@ -107,3 +107,11 @@ Two Optimized Cloud worker nodes and a load balancer are billable resources. The
 - [Vultr registry API credentials](https://docs.vultr.com/products/orchestration/container-registry/management/configurations/generate-docker-config)
 - [Tiger Cloud connection details](https://www.tigerdata.com/docs/integrate/find-connection-details)
 - [Grok structured outputs](https://docs.x.ai/developers/model-capabilities/text/structured-outputs)
+
+## Real-only catalog and Nessie evidence
+
+The deployment now passes `NESSIE_API_KEY` from Actions secrets and runs `scripts/nessie_setup.py` before runtime configuration. With a valid v2 key, the script resolves a dedicated sandbox customer and bookkeeping merchant and passes their IDs through `GITHUB_ENV`. Optional repository variables `NESSIE_CUSTOMER_ID` and `NESSIE_MERCHANT_ID` select existing resources. There is no need to paste any credential into the website.
+
+The catalog, Grok matches, and product picker contain real Keychron listings only. Sold-out or unverified variants cannot be requested. Normal watches hand off to the real merchant. The separate Nessie demonstration authorizes a clearly labeled sandbox total on the same real item and never claims a retailer order. Verify the bank account in Watchlist, then inspect the bank transaction reference and live ledger in Activity.
+
+The 0003 migration repairs prerequisites for databases that previously deployed the original merchant-only 0002 revision. The 0004 migration adds availability and sandbox-mode fields and pauses retired fictional permissions without deleting receipts.

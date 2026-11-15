@@ -1,84 +1,66 @@
 # DealOne
 
-**Set your price. Stay in control.** A Grok-powered shopping agent that watches prices and completes one purchase within rules you explicitly authorize.
+**Set your price. Stay in control.** DealOne watches real Keychron products, turns requests into reviewed permissions with Grok, and demonstrates spending controls through Capital One's Nessie sandbox.
 
-Built for a hackathon concept using **Grok / xAI**, **Tiger Data**, **Nessie** (optional sandbox bank API), and **Vultr Kubernetes Engine**. DealOne is an **independent project and is not affiliated with Capital One**. This implementation uses a controlled demo storefront. Local `.env.example` defaults to simulated payments; production turns on **Nessie v2 sandbox** settlement when `NESSIE_API_KEY` plus a customer/card and merchant id are configured. It does not charge real money or purchase from third-party retailers.
+## Real products, two experiences
+
+The customer catalog contains only real products from **Keychron**, the first approved store. It reads official product feeds for the C3 Pro keyboard and M3 mouse, displays exact variants and merchant artwork, and links directly to the listing. There is no fictional DealOne store in the catalog, Grok results, or item picker. Historical records remain stored, but retired fictional permissions cannot keep purchasing.
+
+- **Merchant price watch:** monitor the actual item price and receive alerts. Complete checkout at Keychron after confirming taxes, shipping, and delivery. DealOne does not yet submit real retailer orders.
+- **Nessie banking demonstration:** use the same real item with an explicitly reviewed **sandbox final total**. This is a test scenario, not a merchant offer. The worker executes controlled browser checkout, authorizes a sandbox charge, and records its bank reference. Every receipt states that no merchant order was placed.
+
+Sold-out variants cannot be requested. A stock check is required when creating or activating a permission and immediately before sandbox payment. Availability that is unknown, stale, or cannot be refreshed fails closed. Price feeds refresh every five minutes. They report availability to order rather than warehouse inventory counts. Prices are USD item prices, excluding merchant shipping and tax. Sandbox totals never overwrite merchant prices, observed history, or inventory.
 
 ## Run locally
 
-Requires Docker with Compose. Node and Python do not need to be installed on your host.
-
 ```sh
 cp .env.example .env
-docker compose up -d --build
+docker compose up -d --build --wait
 ```
 
-Open **http://localhost:3001**. Port 3001 avoids the previous hackathon project's port 3000. Local data lives in the `dealone_database` Docker volume; ordinary restarts preserve it.
+Open **http://localhost:3001**. Docker Compose provides React/Caddy, FastAPI, a dedicated Chromium worker, and TimescaleDB. Production uses Tiger Cloud and the existing Vultr Kubernetes cluster. Data persists in the Docker database volume.
 
-Set `XAI_API_KEY` and a sponsor-enabled `XAI_MODEL` in `.env`, then recreate `api` and `worker` to enable Grok. Without a key, the manual rule form and complete purchase flow still work; the interface explicitly identifies Grok as unconfigured.
+Set `XAI_API_KEY` and `XAI_MODEL` for Grok. Without credentials, manual watch creation remains available. Real feeds must confirm an available variant before a new watch can be requested. An unavailable merchant produces an honest empty/unverified state rather than invented products.
 
-To exercise Nessie instead of pure simulation, set `PAYMENTS_MODE=nessie` plus `NESSIE_API_KEY`, prefer `NESSIE_CUSTOMER_ID` (one sandbox card per watch), and set `NESSIE_MERCHANT_ID`. `NESSIE_CARD_ACCOUNT_ID` remains a shared-card fallback. See `.env.example` and **[deployment setup](docs/DEPLOYMENT.md)**.
+## Demonstration walkthrough
 
-### Demo in 90 seconds
+1. Choose an available real Keychron variant. A sold-out C3 Pro cannot be selected.
+2. Click **Try Nessie sandbox**, or choose **Nessie banking demonstration** in the watch dialog.
+3. Set an all-in spending maximum and a lower sandbox test total. Review both, along with the exact variant and expiration.
+4. Keep **Ask me first**, the default, and activate. A dedicated card is limited to this permission's maximum.
+5. In Watchlist, use **Verify Nessie card** to display the limit and available credit returned directly by the bank API.
+6. Click **Approve purchase**. Activity shows a `SANDBOX-` receipt, the transaction reference, and the live Nessie ledger. No merchant order was placed.
+7. Cancel while the bank transaction is pending. The application offers a 50-second window; the bank can refuse cancellation after settlement.
 
-1. Select **Watch this item** on the headphones.
-2. Set the **all-in maximum to $180**, review the draft, choose **Buy automatically** (Ask me first is the default), and activate.
-3. Confirm the watchlist shows a dedicated virtual card limited to $180.
-4. Open **Demo controls**, enter the local token `local-demo-admin`, and change the headphones' item price to **$159**.
-5. Wait for the worker's next scan (10 seconds). The browser worker opens checkout, revalidates your rules, and submits the order.
-6. Open **Activity**: the receipt is **$168.94** including simulated Massachusetts sales tax. The watch becomes `purchased`.
+Automatic sandbox submission requires opting in on that permission. Grok cannot activate a permission, raise its limits, bypass ask-first approval, or request a sold-out item. The controlled browser never visits arbitrary merchant pages.
 
-**Ask me first:** leave the default mode on another item, drop its price, and confirm Activity shows a match alert with no receipt until you click **Approve purchase**.
+## Nessie integration
 
-**Hidden instructions:** the Compact USB-C Hub listing embeds adversarial seller text. Ask Grok about it — product copy is treated as data, never as instructions.
+`PAYMENTS_MODE=simulation` uses a local simulator, clearly labeled. `PAYMENTS_MODE=nessie` uses the official Nessie v2 sandbox API:
 
-**Nessie (optional):** with sandbox credentials configured, Demo controls can **Seed sandbox**, **Force low credit** (bank decline), or **Reset card holds**. Activity shows the DealOne charge map and live Nessie ledger. Pending charges settle automatically after the cancel window.
+- A credit-card account per permission, with `credit_limit_cents` equal to the approved cap.
+- A purchase posted to that account and a durable order-to-transaction mapping.
+- Bank declines surfaced in the watchlist and receipt.
+- Direct account verification showing limit, pending debits and available credit.
+- Pending-charge cancellation and a live transaction ledger.
 
-The catalog and initial price history are synthetic demo data. A price change in Demo controls is real database state used by the monitoring worker; the receipt is generated by the checkout flow, not fabricated by the frontend.
+For local Nessie use, configure `NESSIE_API_KEY`, `NESSIE_CUSTOMER_ID`, and `NESSIE_MERCHANT_ID`. These identify sandbox resources, not a real retailer payment relationship. No production virtual-card issuance or real funds are involved.
 
-## Architecture
+GitHub deployment reads the existing `NESSIE_API_KEY` secret. `scripts/nessie_setup.py` authenticates with v2 and resolves or creates a dedicated DealOne sandbox customer and bookkeeping merchant. IDs may instead be supplied as `NESSIE_CUSTOMER_ID` and `NESSIE_MERCHANT_ID` repository variables. Invalid credentials stop deployment with a clear error rather than falsely reporting a bank connection. Credentials never enter frontend bundles or Grok context.
 
-```text
-Browser → Traefik / HTTPS → React + Caddy → FastAPI
-                                             │
-                                         Tiger Cloud
-                                             │
-                                    Monitoring worker
-                                             │
-                                 Playwright → Demo checkout
-                                             │
-                    Simulated card  or  Nessie sandbox card + ledger
-```
+Official API contract: [Nessie v2 OpenAPI](https://v2-prod-api.nessieisreal.com/openapi.json).
 
-- React, TypeScript, Vite, Tailwind, and a shadcn-style Radix/CVA button component.
-- FastAPI, Pydantic, SQLAlchemy, Alembic, and Psycopg 3.
-- Official `xai-sdk` for structured rules and bounded function calling. Grok cannot activate permissions, override limits, view payment credentials, or navigate a browser freely.
-- Payments default to simulation. With Nessie credentials, each activated watch mints a sandbox credit card capped at its budget; Activity shows the bank ledger; Demo controls can seed, reset, or force a decline.
-- Tiger Cloud in production; TimescaleDB in local Docker. Price observations use a hypertable. All money uses integer cents.
-- Two web and two API replicas, one worker with a Recreate update strategy, a load balancer, Traefik, and cert-manager in Kubernetes. Database storage stays in Tiger Cloud.
-- Separate API and browser-worker images share backend source. The worker installs Chromium matching its pinned Playwright package.
+## Hosting and delivery
 
-## Purchase guarantees
+React, TypeScript, Vite and Tailwind form the frontend. FastAPI, Pydantic, SQLAlchemy, Alembic and Psycopg form the backend. The official xAI SDK supplies structured rules and bounded tools. Tiger Cloud stores application records and a price-observation hypertable.
 
-Permissions start as drafts. Activation authorizes one item with a specific variant, seller, condition, currency, all-in maximum, and expiration, and issues a **single-use virtual card capped at that maximum**. In Nessie mode that card is also a sandbox credit account. The default mode is **ask me first**; automatic purchasing is opt-in. Every checkout rechecks these constraints, the permission card limit, stock, and the prepared total. A changed checkout total requires review. Prices far below recent history pause for user review. Bank declines mark the watch and order as `declined` with a clear next step.
+Two web replicas, two API replicas and one Playwright Chromium worker run in the existing Vultr cluster. Traefik and cert-manager provide HTTPS for **dealone.work**. GitHub Actions checks changes, builds immutable images, runs migrations and waits for readiness. Deployment never creates additional Kubernetes clusters. See [deployment setup](docs/DEPLOYMENT.md) for secrets, DNS and rollback.
 
-Orders have a unique permission reference. The merchant ledger and payment authorization have unique order references. A durable bank-charge mapping keeps DealOne ↔ Nessie idempotent across retries. Permission and product row locks serialize competing purchases; a session advisory lock prevents multiple browser executors for the same order. Merchant order, authorization, stock decrement, receipt, and permission completion commit atomically.
+Porkbun DNS automation uses `PORKBUN_API_KEY` and `PORKBUN_SECRET_API_KEY`, updates only website records and preserves email/subdomains. The Vultr API key remains in deployment tooling.
 
-Completed purchases stay cancellable for a short window while the sandbox charge is still pending; after that window the worker settles the hold. On a restart, the worker checks the merchant ledger before submitting. A timeout with a committed receipt is reconciled; an unknown failure without a receipt pauses for user review. No blind payment retry occurs. Login, CAPTCHA, and real payment authentication are outside this controlled adapter; future adapters must report these as required user actions.
+## Verification
 
-Browser contexts send only an internal worker credential, and navigation is restricted to the configured demo storefront origin. Public API users cannot call the storefront submission routes. Sessions are isolated with signed, HttpOnly, SameSite cookies; production uses Secure cookies. This demo does not provide account recovery: clearing cookies creates a new workspace.
-
-## Deploy to Vultr
-
-See **[deployment setup](docs/DEPLOYMENT.md)** for exact GitHub secrets, workflows, DNS, and rollback steps. Deployment targets **dealone.work** on your existing Vultr Kubernetes cluster.
-
-Create the Kubernetes cluster in Vultr and set its UUID as the GitHub repository variable `VULTR_CLUSTER_ID`. CI/CD never creates a cluster or worker nodes. Deployment connects to the existing cluster and installs or reconciles Traefik and cert-manager for ingress and HTTPS. Traefik's LoadBalancer service creates a billed Vultr load balancer if one does not already exist.
-
-Domain DNS can be automatic: add `PORKBUN_API_KEY` and `PORKBUN_SECRET_API_KEY` with API access enabled for `dealone.work`. Deployment then synchronizes the root website record to Traefik's load balancer, preserving email records and subdomains. Without these keys, the workflows print manual DNS instructions. See the deployment guide for setup and a standalone DNS refresh workflow.
-
-Nessie turns on in production when `NESSIE_API_KEY` is set with `NESSIE_CUSTOMER_ID` or `NESSIE_CARD_ACCOUNT_ID`. Production also requires `NESSIE_MERCHANT_ID`.
-
-## Verify
+Backend tests use isolated database schemas and mock external banking. Fictional boundary-test fixtures never appear in the customer catalog. Browser acceptance uses deterministic real-SKU fixtures in an explicitly named test environment and exercises the actual controlled browser worker.
 
 ```sh
 docker compose exec -T api python -m pytest -q tests
@@ -86,24 +68,6 @@ python3 -m unittest discover -s scripts/tests -q
 kubectl kustomize infra/k8s
 ```
 
-For browser acceptance tests, install frontend dependencies in Node 22 and matching Playwright Chromium, then run `npm run test:e2e` in `frontend`. Tests exercise real API state and the browser worker; backend tests use an isolated temporary database schema.
+CI sets `APP_ENV=test`, disables merchant polling, and runs `python -m tests.seed_real_catalog` before Chromium acceptance tests. That fixture script refuses non-test environments.
 
-Every push to `main` automatically runs `Checks` → `Deploy DealOne` → `Synchronize Porkbun DNS` → `Refresh registry pull credentials`, proceeding only after the previous workflow succeeds. Checks also run on pull requests without deploying. Deployment reports missing configuration explicitly. Manual runs remain available for recovery and rollback; registry credentials also refresh weekly.
-
-Health endpoints: `/api/health/live`, `/api/health/ready`, `/api/health/worker`. Interactive API reference: `/docs` on the internal API service (not routed by the public web server).
-
-## Initial-version boundaries
-
-- The only merchant is the controlled demo storefront. Payments are simulated locally, or sandbox charges via Nessie when configured — never real money.
-- Price monitoring reads that storefront's database; external retailer ingestion is a future adapter.
-- Notifications are in-app. Resend configuration is reserved for a later email opt-in feature; providing its key alone does not enable email delivery.
-- Grok needs a valid sponsor key, enabled model, and API credits; local automated tests do not consume API credits.
-- Public deployment, live Grok connectivity, and DNS/TLS require your configured accounts and credentials.
-
-### Catalog and product visuals
-
-**Practice checkout** (demo products) is the default surface. External “Real stores” / Keychron feeds are **off by default** (`REAL_CATALOG_ENABLED=false` in `.env.example` and production). When disabled, the API omits merchant products and the UI hides the Real stores tab so the demo cannot hit live retailers.
-
-Set `REAL_CATALOG_ENABLED=true` only when you intentionally want the Keychron feed adapter (C3 Pro keyboard and M3 mouse). That path supports price alerts and merchant checkout links only — not internal checkout, sandbox charges, or demo price overrides.
-
-Grok searches product names, categories and merchants using `find_product`. Search results include actionable product visuals. A parsed change of item updates the watch form, image, icon and source link together, then requires review and activation. The UI uses a neutral slate/teal DealOne palette (not Capital One branding).
+Health endpoints are `/api/health/live`, `/api/health/ready`, and `/api/health/worker`. Alerts are in-app. Email, a second merchant, real retailer auto-checkout and production card issuance remain separate integrations.

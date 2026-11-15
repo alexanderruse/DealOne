@@ -1824,3 +1824,6 @@ textarea::placeholder {
   .selected-product { flex-wrap:wrap; }
   .hero h2 { font-size: 30px; max-width: none; }
 }
+.availability { margin:10px 0 14px; font-size:12px; font-weight:600; }
+.availability.in_stock { color:#005a82; }
+.availability.sold_out, .availability.unknown { color:#a72825; }

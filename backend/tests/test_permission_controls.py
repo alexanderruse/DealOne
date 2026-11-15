@@ -93,7 +93,7 @@ def test_hidden_instruction_product_is_seeded_as_data(db):
     assert view["contains_hidden_instructions"] is True
     assert "Mechanical Keyboard" in view["description"]
     found = execute_tool("find_product", SearchRequest(query="USB"), db, "owner")
-    assert any(item["id"] == "usb-hub" for item in found)
+    assert not any(item["id"] == "usb-hub" for item in found)  # Fictional fixtures never reach Grok.
     # Product text must never become an executable purchase path on its own.
     with pytest.raises(PurchaseRejected, match="not found"):
         execute_tool("request_purchase", PermissionReference(permission_id="not-a-real-permission"), db, "owner")

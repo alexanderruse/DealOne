@@ -44,6 +44,8 @@ type Product = {
   category: string;
   color: string;
   source_kind: 'demo' | 'merchant';
+  can_request: boolean;
+  stock_status: 'in_stock' | 'sold_out' | 'unknown';
   source_url: string | null;
   image_url: string | null;
   icon: string;
@@ -64,6 +66,8 @@ type Permission = {
   variant: string;
   seller: string;
   purchase_mode: 'ask_first' | 'auto_buy';
+  checkout_mode: 'merchant_handoff' | 'sandbox' | 'legacy';
+  sandbox_total_cents?: number | null;
   card?: PermissionCard | null;
 };
 type Order = {
@@ -114,13 +118,15 @@ function App() {
   const [notices, setNotices] = useState<Notice[]>([]);
   const [histories, setHistories] = useState<Record<string, Observation[]>>({});
   const [page, setPage] = useState('Overview');
-  const [catalogMode, setCatalogMode] = useState<'merchant' | 'demo'>('demo');
+  const catalogMode = 'merchant';
+  const [checkoutMode, setCheckoutMode] = useState<'merchant_handoff' | 'sandbox'>('merchant_handoff');
+  const [sandboxTotal, setSandboxTotal] = useState('');
+  const [bankEvidence, setBankEvidence] = useState<{last4: string; credit_limit_cents: number; available_cents: number; verified_at: string} | null>(null);
   const [catalogQuery, setCatalogQuery] = useState('');
   const [recommendations, setRecommendations] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [grok, setGrok] = useState(false);
   const [payments, setPayments] = useState('simulation');
-  const [realCatalogEnabled, setRealCatalogEnabled] = useState(false);
   const [cardSummary, setCardSummary] = useState<CardSummary | null>(null);
   const [ledger, setLedger] = useState<Ledger>({ charges: [], nessie: [] });
   const [loading, setLoading] = useState(true);
@@ -134,8 +140,6 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminToken, setAdminToken] = useState('');
-  const [demoPrice, setDemoPrice] = useState('159');
-  const [demoProduct, setDemoProduct] = useState('headphones');
   const [demoCredit, setDemoCredit] = useState('1');
   const [demoCardPermission, setDemoCardPermission] = useState('');
   const [chat, setChat] = useState('');
@@ -151,7 +155,7 @@ function App() {
       api<Notice[]>('/notifications'),
     ]);
     setProducts(p);
-    setWatches(w);
+    setWatches(w.filter((watch) => p.some((product) => product.source_kind === 'merchant' && product.id === watch.product_id)));
     setOrders(o);
     setNotices(n);
     // Card summary / ledger are extra; a bank hiccup must never blank the rest of the page.
@@ -172,13 +176,11 @@ function App() {
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setInterval>;
-    api<{ grok_configured: boolean; payments: string; real_catalog_enabled?: boolean }>('/session')
+    api<{ grok_configured: boolean; payments: string }>('/session')
       .then(async (s) => {
         if (!active) return;
         setGrok(s.grok_configured);
         setPayments(s.payments);
-        setRealCatalogEnabled(Boolean(s.real_catalog_enabled));
-        if (!s.real_catalog_enabled) setCatalogMode('demo');
         await refresh();
         timer = setInterval(() => {
           refresh().catch(() => {});
@@ -204,7 +206,10 @@ function App() {
       setBusy(false);
     }
   }
-  function openWatch(p: Product) {
+  function openWatch(p: Product, mode: 'merchant_handoff' | 'sandbox' = 'merchant_handoff') {
+    if (!p.can_request) { setError('This variant is sold out or its availability is unverified.'); return; }
+    setCheckoutMode(mode);
+    setSandboxTotal((p.price_cents * 0.9 / 100).toFixed(2));
     setSelected(p);
     setBudget(String(Math.round((p.price_cents * 0.9) / 100)));
     setDraft(null);
@@ -225,7 +230,7 @@ function App() {
       await api<Permission>('/permissions', { method: 'POST', body: JSON.stringify(rules) }),
     );
   }
-  const visibleProducts = products.filter((p) => (p.source_kind || 'demo') === catalogMode
+  const visibleProducts = products.filter((p) => p.source_kind === 'merchant'
     && `${p.name} ${p.category} ${p.seller} ${p.variant}`.toLowerCase().includes(catalogQuery.toLowerCase()));
   const SelectedIcon = selected ? icons[selected.icon as keyof typeof icons] || icons[selected.id as keyof typeof icons] || Package : Radar;
   const activeWatches = watches.filter((w) => w.status === 'active').length;
@@ -276,7 +281,7 @@ function App() {
           <div className="autopilot">
             <ShieldCheck size={22} />
             <strong>You set the limit</strong>
-            <p>Every watch issues its own virtual card. Ask-first stays on unless you choose auto-buy.</p>
+            <p>Every sandbox permission issues its own card. Ask-first stays on unless you choose auto-run.</p>
             <span>
               <i /> {payments === 'nessie' ? 'Nessie settlement' : 'Simulated payments'}
             </span>
@@ -343,7 +348,7 @@ function App() {
                       : 'Describe what you want. We’ll match it to a catalog item you can watch.'}
               </p>
             </div>
-            <Button onClick={() => (visibleProducts[0] || products[0]) && openWatch(visibleProducts[0] || products[0])}>
+            <Button onClick={() => products.find((p) => p.can_request) && openWatch(products.find((p) => p.can_request)!)}>
               <Plus size={17} />
               Start a watch
             </Button>
@@ -407,7 +412,7 @@ function App() {
                         Active watches
                         <strong>
                           {activeWatches}
-                          <small> cards monitoring price</small>
+                          <small> real items being watched</small>
                         </strong>
                       </span>
                     </div>
@@ -417,17 +422,17 @@ function App() {
                         Authorized budget
                         <strong>
                           {money(committed)}
-                          <small> combined card limits</small>
+                          <small> combined spending caps</small>
                         </strong>
                       </span>
                     </div>
                     <div>
                       <button className="stat-icon" aria-label="View purchase receipts" onClick={() => setPage('Activity')}><CheckCheck size={20} /></button>
                       <span>
-                        Completed purchases
+                        Sandbox transactions
                         <strong>
                           {completed.length}
-                          <small> settled demo orders</small>
+                          <small> banking demonstrations</small>
                         </strong>
                       </span>
                     </div>
@@ -466,15 +471,15 @@ function App() {
                           const product = products.find((p) => p.id === w.product_id);
                           const canBuy =
                             w.status === 'active' &&
-                            product != null &&
-                            product.total_cents <= w.max_total_cents;
+                            product != null && product.can_request && w.checkout_mode === 'sandbox' &&
+                            (w.sandbox_total_cents || product.total_cents) <= w.max_total_cents;
                           return (
                             <div className="watch-row" key={w.id}>
                               <div>
                                 <strong>{product?.name}</strong>
                                 <small>{w.variant}</small>
                                 <small className="watch-meta">
-                                  {w.purchase_mode === 'auto_buy' ? 'Auto-buy' : 'Ask me first'}
+                                  {w.checkout_mode === 'sandbox' ? 'Sandbox banking demo' : 'Merchant price alert'}
                                   {w.card
                                     ? ` · Card •••• ${w.card.last4} · limit ${money(w.card.limit_cents)}`
                                     : ''}
@@ -486,6 +491,8 @@ function App() {
                               </div>
                               <span className={`status ${w.status}`}>{w.status}</span>
                               <div className="row-actions">
+                                {product?.source_url && <a className="button button-outline" href={product.source_url} target="_blank" rel="noopener noreferrer">Review at store <ArrowUpRight size={14} /></a>}
+                                {w.card?.nessie_account_id && <Button variant="outline" onClick={() => run(async () => { setBankEvidence(await api(`/payments/cards/${w.id}/verify`)); setPage('Activity'); })}>Verify Nessie card</Button>}
                                 {w.status === 'draft' && (
                                   <Button
                                     disabled={busy}
@@ -549,22 +556,15 @@ function App() {
                     </div>
                   )}
                   <div className="catalog-controls">
-                    {realCatalogEnabled && (
-                      <div className="catalog-tabs" aria-label="Product source">
-                        <button aria-pressed={catalogMode === 'merchant'} onClick={() => setCatalogMode('merchant')}>Real stores</button>
-                        <button aria-pressed={catalogMode === 'demo'} onClick={() => setCatalogMode('demo')}>Practice checkout</button>
-                      </div>
-                    )}
+                    <div className="catalog-tabs"><strong>Keychron official store</strong>
+                      <Button variant="outline" disabled={!products.some((p) => p.can_request)} onClick={() => { const p = products.find((p) => p.can_request); if (p) openWatch(p, 'sandbox'); }}>{payments === 'nessie' ? 'Try Nessie sandbox' : 'Try banking sandbox'}</Button>
+                    </div>
                     <label className="catalog-search">Find an item
-                      <input aria-label="Find an item" placeholder="Headphones, keyboard, speaker…" value={catalogQuery} onChange={(e) => setCatalogQuery(e.target.value)} />
+                      <input aria-label="Find an item" placeholder="Keyboard, mouse, Keychron…" value={catalogQuery} onChange={(e) => setCatalogQuery(e.target.value)} />
                     </label>
                   </div>
-                  <p className="catalog-disclosure">{catalogMode === 'merchant' && realCatalogEnabled
-                    ? 'Real Keychron listings. Prices refresh every 5 minutes. Tax, shipping and stock need confirmation at the merchant. Checkout opens at the store.'
-                    : payments === 'nessie'
-                      ? 'Practice catalog with Nessie sandbox settlement. Charges are sandbox-only — never real money.'
-                      : 'Practice products and payments are simulated. Use this catalog to try the complete automatic checkout flow.'}</p>
-                  {visibleProducts.length === 0 && <div className="empty"><Package /><h3>{catalogQuery ? 'No matching items yet.' : realCatalogEnabled ? 'Waiting for merchant prices.' : 'No practice products yet.'}</h3><p>{catalogQuery ? 'Try another product name or ask Grok about the supported catalog.' : realCatalogEnabled ? 'Merchant data may be temporarily unavailable. You can still try Practice checkout.' : 'Demo products load from the practice storefront.'}</p></div>}
+                  <p className="catalog-disclosure">Real products from one approved store. The merchant confirms stock for each variant. Sold-out or unverified items cannot be requested. Nessie sandbox mode demonstrates banking without placing a merchant order. Banking provider: {payments === 'nessie' ? 'Nessie v2 API' : 'local simulator (Nessie not connected)'}.</p>
+                  {visibleProducts.length === 0 && <div className="empty"><Package /><h3>{catalogQuery ? 'No matching items yet.' : 'Waiting for merchant prices.'}</h3><p>{catalogQuery ? 'Try another product name or ask Grok about the supported catalog.' : 'Merchant data may be temporarily unavailable. No products will be invented while the merchant is unavailable.'}</p></div>}
                   <section className="product-grid">
                     {visibleProducts.map((p) => {
                       const history = histories[p.id] || [];
@@ -582,10 +582,10 @@ function App() {
                           <div className={`product-art ${p.color}`}>
                             <span className="category">{p.category}</span>
                             <ProductVisual key={p.id} product={p} />
-                            <span className="discount" hidden={p.original_cents <= p.price_cents}>
+                            {p.original_cents > p.price_cents && <span className="discount">
                               <ArrowDownRight size={12} />
                               {Math.round((1 - p.price_cents / p.original_cents) * 100)}%
-                            </span>
+                            </span>}
                           </div>
                           <div className="product-info">
                             <span className="seller">
@@ -614,7 +614,7 @@ function App() {
                                 <polyline
                                   points={points}
                                   fill="none"
-                                  stroke="#0f766e"
+                                  stroke="#0070a8"
                                   strokeWidth="2"
                                   vectorEffect="non-scaling-stroke"
                                 />
@@ -628,7 +628,8 @@ function App() {
                               <span>{p.price_checked_at ? `Checked ${new Date(p.price_checked_at).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})}${Date.now() - new Date(p.price_checked_at).getTime() > 900000 ? ' · refresh delayed' : ''}` : 'Price not checked'}</span>
                               <a href={p.source_url || undefined} target="_blank" rel="noopener noreferrer">View at {p.seller} <ArrowUpRight size={13} /></a>
                             </div>}
-                            <Button variant="outline" onClick={() => openWatch(p)}>
+                            <p className={`availability ${p.stock_status}`}>{p.can_request ? 'Available to order · merchant verified' : p.stock_status === 'sold_out' ? 'Sold out · cannot request' : 'Availability unverified · cannot request'}</p>
+                            <Button variant="outline" disabled={!p.can_request} onClick={() => openWatch(p)}>
                               <Plus size={16} />
                               Watch this item
                               <ArrowUpRight size={15} />
@@ -676,7 +677,9 @@ function App() {
                     )}
                   </section>
                   <section className="panel">
-                    <h2>Purchase receipts</h2>
+                    <h2>Sandbox receipts</h2>
+                    <p className="fineprint">These are banking demonstrations for real products. No retailer order has been placed.</p>
+                    {bankEvidence && <div className="review"><strong>Verified directly with Nessie · •••• {bankEvidence.last4}</strong><p>Bank limit {money(bankEvidence.credit_limit_cents)} · Available credit {money(bankEvidence.available_cents)}</p><small>{new Date(bankEvidence.verified_at).toLocaleString()}</small></div>}
                     {orders.length === 0 && (
                       <p className="muted">
                         No purchases yet. Every completed order will leave a trail here.
@@ -805,11 +808,7 @@ function App() {
                     </div>)}
                   </div>}
                   <p className="fineprint">
-                    Grok can request purchases only under rules you have already activated. Product
-                    text is never treated as instructions — try the USB-C Hub demo item.{' '}
-                    {payments === 'nessie'
-                      ? 'Payments settle against the Nessie sandbox — never real money.'
-                      : 'Payments in this preview are simulated.'}
+                    Grok can request purchases only under rules you have already activated. Only available products from the approved store can be requested. Product text cannot change purchase rules. Nessie demonstrates sandbox banking. Real merchant orders require merchant checkout.
                   </p>
                 </section>
               )}
@@ -820,11 +819,7 @@ function App() {
             <span>Independent hackathon project · Not affiliated with Capital One</span>
             <span>Grok × Tiger Data × Vultr</span>
           </footer>
-          <p className="legal-disclaimer">
-            DealOne is an independent student/hackathon project. It is not a product of Capital One
-            and is not affiliated with, endorsed by, or sponsored by Capital One Financial Corporation
-            or its affiliates. Nessie, when enabled, is used only as a public sandbox API.
-          </p>
+          <p className="legal-disclaimer">DealOne is an independent student/hackathon project. It is not a Capital One product. Nessie is used only as a public sandbox API.</p>
         </main>
       </div>
 
@@ -852,7 +847,13 @@ function App() {
               <div><strong>{selected.seller}</strong><small>{selected.source_kind === 'merchant' ? 'Real listing · merchant checkout' : 'Practice listing · simulated checkout'}</small></div>
               {selected.source_url && <a href={selected.source_url} target="_blank" rel="noopener noreferrer">View item <ArrowUpRight size={14} /></a>}
             </div>
-            {selected.source_kind === 'merchant' && <p className="catalog-disclosure">DealOne monitors this real item and sends price alerts. Complete your purchase at the store after confirming the final total. Automatic merchant checkout is not connected.</p>}
+            <p className="catalog-disclosure">{checkoutMode === 'sandbox' ? `${payments === 'nessie' ? 'Nessie v2 API' : 'Local simulator (Nessie API not connected)'} demonstration using this real item. The checkout total below is a test scenario, not a merchant offer. No real money moves and no merchant order is placed.` : 'Watch this real item and review its price at the store. Automatic retailer checkout is not connected.'}</p>
+            <label htmlFor="checkout-mode">Experience</label>
+            <select id="checkout-mode" value={checkoutMode} onChange={(e) => setCheckoutMode(e.target.value as 'merchant_handoff' | 'sandbox')}>
+              <option value="merchant_handoff">Real price watch and merchant checkout</option>
+              <option value="sandbox">Nessie banking demonstration · same real item</option>
+            </select>
+            {checkoutMode === 'sandbox' && <><label htmlFor="sandbox-total">Sandbox final total (USD, test scenario)</label><input id="sandbox-total" type="number" min="0.01" step="0.01" value={sandboxTotal} onChange={(e) => setSandboxTotal(e.target.value)} required /></>}
             {draft ? (
               <>
                 <div className="review">
@@ -873,7 +874,7 @@ function App() {
                     <strong>{new Date(draft.expires_at).toLocaleString()}</strong>
                   </div>
                 </div>
-                <fieldset className="mode-picker">
+                {checkoutMode === 'sandbox' && <fieldset className="mode-picker">
                   <legend>When the price matches</legend>
                   <label className={purchaseMode === 'ask_first' ? 'selected' : ''}>
                     <input
@@ -896,12 +897,12 @@ function App() {
                     />
                     <span>
                       <strong>Buy automatically</strong>
-                      <small>One purchase when every rule matches.</small>
+                      <small>Run this sandbox bank transaction when its rules match.</small>
                     </span>
                   </label>
-                </fieldset>
+                </fieldset>}
                 <p className="fineprint">
-                  {selected.source_kind === 'merchant' ? 'Activate to monitor this item and receive price alerts. The merchant confirms taxes, shipping and availability before you purchase.' : 'Activating lets DealOne automatically complete one simulated purchase when every rule matches. Tax and shipping must fit your maximum.'}
+                  {checkoutMode === 'merchant_handoff' ? 'Activate price alerts only. The store confirms the final total before you purchase.' : `This authorizes one sandbox bank transaction for ${money(Math.round(Number(sandboxTotal) * 100))}, within your approved limit. ${purchaseMode === 'ask_first' ? 'You must approve it in the watchlist.' : 'The demonstration worker may submit it automatically.'}`}
                 </p>
                 <Button
                   className="full-width"
@@ -910,7 +911,7 @@ function App() {
                     run(async () => {
                       await api(`/permissions/${draft.id}/activate`, {
                         method: 'POST',
-                        body: JSON.stringify({ purchase_mode: purchaseMode }),
+                        body: JSON.stringify({ purchase_mode: checkoutMode === 'sandbox' ? purchaseMode : 'ask_first', checkout_mode: checkoutMode, sandbox_total_cents: checkoutMode === 'sandbox' ? Math.round(Number(sandboxTotal) * 100) : null }),
                       });
                       setSelected(null);
                       setPage('Watchlist');
@@ -918,7 +919,7 @@ function App() {
                   }
                 >
                   <ShieldCheck size={17} />
-                  {selected.source_kind === 'merchant' ? 'Activate price watch' : 'Activate automatic purchase'}
+                  {checkoutMode === 'merchant_handoff' ? 'Activate price watch' : 'Activate sandbox permission'}
                 </Button>
               </>
             ) : (
@@ -944,7 +945,7 @@ function App() {
                           body: JSON.stringify({ text: prompt }),
                         });
                         const p = products.find((p) => p.id === r.product_id);
-                        if (p) setSelected(p);
+                        if (p && p.can_request) { setSelected(p); setSandboxTotal((Math.min(p.price_cents * 0.9, r.max_total_cents) / 100).toFixed(2)); }
                         setBudget(String(r.max_total_cents / 100));
                         setParsedExpiration(r.expires_at);
                         setDeadline(
@@ -964,7 +965,7 @@ function App() {
                 </div>
                 <label htmlFor="watch-product">Item to watch</label>
                 <select id="watch-product" value={selected.id} onChange={(e) => { const p = products.find((p) => p.id === e.target.value); if (p) openWatch(p); }}>
-                  {products.map((p) => <option key={p.id} value={p.id}>{p.name} · {p.seller}</option>)}
+                  {products.filter((p) => p.source_kind === 'merchant' && p.can_request).map((p) => <option key={p.id} value={p.id}>{p.name} · {p.seller}</option>)}
                 </select>
                 <div className="divider">or set your rules</div>
                 <form
@@ -1038,56 +1039,9 @@ function App() {
               <X size={21} />
             </button>
             <h2 id="demo-title">Demo controls</h2>
-            <p>Change a demo price to exercise the real monitoring and checkout flow.</p>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                run(async () => {
-                  await api(`/demo/products/${demoProduct}/price`, {
-                    method: 'POST',
-                    headers: { 'x-demo-admin-token': adminToken },
-                    body: JSON.stringify({ price_cents: Math.round(Number(demoPrice) * 100) }),
-                  });
-                  setAdminOpen(false);
-                });
-              }}
-            >
-              <label htmlFor="admin-token">Demo administrator token</label>
-              <input
-                id="admin-token"
-                type="password"
-                value={adminToken}
-                onChange={(e) => setAdminToken(e.target.value)}
-                required
-                autoComplete="off"
-              />
-              <label htmlFor="demo-product">Product</label>
-              <select
-                id="demo-product"
-                value={demoProduct}
-                onChange={(e) => setDemoProduct(e.target.value)}
-              >
-                {products.filter((p) => p.source_kind !== 'merchant').map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-              <label htmlFor="demo-price">New item price (USD)</label>
-              <input
-                id="demo-price"
-                type="number"
-                min="0.01"
-                step="0.01"
-                value={demoPrice}
-                onChange={(e) => setDemoPrice(e.target.value)}
-                required
-              />
-              <Button className="full-width" disabled={busy}>
-                <TrendingDown size={17} />
-                Update demo price
-              </Button>
-            </form>
+            <p>Real prices and stock come only from Keychron. Use the sandbox experience on an available real item to demonstrate card limits and transactions.</p>
+            <label htmlFor="admin-token">Demo administrator token</label>
+            <input id="admin-token" type="password" value={adminToken} onChange={(e) => setAdminToken(e.target.value)} autoComplete="off" />
             {payments === 'nessie' && (
               <div className="demo-nessie">
                 <h3>Nessie sandbox</h3>

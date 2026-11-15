@@ -136,19 +136,12 @@ class NessieProvider:
 
     def _page_transactions(self, client, account_id: str):
         """Page through sandbox transactions so idempotency is not limited to the first page."""
-        offset = 0
-        page_size = 100
-        while True:
-            response = client.get(f"/accounts/{account_id}/transactions",
-                                  params={"limit": page_size, "offset": offset})
-            response.raise_for_status()
-            batch = _items(response.json())
-            if not batch:
-                break
-            yield from batch
-            if len(batch) < page_size:
-                break
-            offset += page_size
+        response = client.get(f"/accounts/{account_id}/transactions", params={"limit": 5000})
+        response.raise_for_status()
+        batch = _items(response.json())
+        yield from batch
+        if len(batch) >= 5000:
+            raise PaymentUnavailable("Transaction history reached the provider limit; reconcile before charging again")
 
     def _find_existing(self, client, account_id: str, order_id: str):
         needle = self._description(order_id)
@@ -166,10 +159,9 @@ class NessieProvider:
             with self._client() as client:
                 response = client.post(f"/customers/{customer_id}/accounts", json={
                     "type": "Credit Card",
-                    "nickname": f"DealOne •••• {last4}",
+                    "nickname": f"DealOne {permission_id[:8]} {last4}",
                     "credit_limit_cents": limit_cents,
                     "balance_cents": 0,
-                    "metadata": {"permission_id": permission_id, "dealone": True},
                 })
                 response.raise_for_status()
                 account = response.json()
@@ -313,9 +305,8 @@ class NessieProvider:
                         merchant_id = str(dealone["id"])
                     else:
                         created = client.post("/merchants", json={
-                            "name": "DealOne Demo Store",
+                            "name": "DealOne Sandbox Checkout",
                             "category": "electronics",
-                            "address": {"city": "McLean", "state": "VA", "zip": "22102"},
                         })
                         created.raise_for_status()
                         merchant_id = str(created.json()["id"])
