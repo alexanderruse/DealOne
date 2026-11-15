@@ -717,6 +717,36 @@ def run_checkout_demo(demo_id: str):
             demo.updated_at = utcnow()
 
 
+def capture_payment_closeup(page, payment_inputs, profile):
+    number, frame = payment_inputs["card_number"]
+    scroll_target = frame.frame_element() if frame.parent_frame is not None else number
+    scroll_target.evaluate("el => el.scrollIntoView({block: 'center'})")
+
+    for field, (locator, _) in payment_inputs.items():
+        # Reveal only the verified synthetic value using the input's native layout.
+        revealed = locator.evaluate(r"""(input, expected) => {
+            if (input.value.replace(/\D/g, '') !== expected || input.getAttribute('aria-invalid') === 'true') {
+                return false;
+            }
+            input.style.setProperty('-webkit-text-security', 'none', 'important');
+            return true;
+        }""", re.sub(r"\D", "", profile[field]), timeout=1500)
+        if not revealed:
+            return None
+
+    page.wait_for_timeout(200)
+    boxes = [locator.bounding_box(timeout=1500) for locator, _ in payment_inputs.values()]
+    viewport = page.viewport_size
+    if any(not box or box["y"] < 0 or box["y"] + box["height"] > viewport["height"] for box in boxes):
+        return None
+    left = max(0, min(box["x"] for box in boxes) - 32)
+    top = max(0, min(box["y"] for box in boxes) - 70)
+    right = min(viewport["width"], max(box["x"] + box["width"] for box in boxes) + 32)
+    bottom = min(viewport["height"], max(box["y"] + box["height"] for box in boxes) + 64)
+    return page.screenshot(clip={"x": left, "y": top, "width": right - left, "height": bottom - top},
+                           timeout=5000)
+
+
 def capture_checkout_demo(demo_id: str):
     """Playwright browser worker for automated checkout fill and evidence capture.
     Fills synthetic values, stops before submission, and records screenshots."""
@@ -974,49 +1004,9 @@ def capture_checkout_demo(demo_id: str):
                     pass
 
             # STRICT SUBMISSION PREVENTION: NEVER CLICK PLACE ORDER OR SUBMIT
-            # Chromium may leave off-screen cross-origin frames unpainted in a
-            # full-page capture even after their input values were updated.
-            for field, (locator, _) in payment_inputs.items():
-                if field not in fields_completed:
-                    continue
-                try:
-                    locator.evaluate("""(input, value) => {
-                        // Paint the verified test value without changing the
-                        // hosted input or triggering another checkout update.
-                        const box = input.getBoundingClientRect();
-                        const style = getComputedStyle(input);
-                        const preview = document.createElement('span');
-                        preview.textContent = value;
-                        Object.assign(preview.style, {
-                            position: 'fixed', left: box.left + 'px', top: box.top + 'px',
-                            width: box.width + 'px', height: box.height + 'px',
-                            display: 'flex', alignItems: 'center', boxSizing: 'border-box',
-                            paddingLeft: style.paddingLeft, color: '#111827',
-                            background: '#fff', font: style.font, zIndex: '2147483647',
-                            pointerEvents: 'none',
-                        });
-                        input.style.color = 'transparent';
-                        document.body.append(preview);
-                    }""", profile[field], timeout=1500)
-                except PlaywrightError:
-                    log.info("Synthetic %s preview unavailable for %s", field, demo_id)
             try:
                 if all(field in fields_completed for field in CARD_SELECTORS):
-                    number, frame = payment_inputs["card_number"]
-                    if frame.parent_frame is not None:
-                        frame.frame_element().scroll_into_view_if_needed(timeout=3000)
-                    else:
-                        number.scroll_into_view_if_needed(timeout=3000)
-                    page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
-                    boxes = [locator.bounding_box(timeout=1500) for locator, _ in payment_inputs.values()]
-                    viewport = page.viewport_size
-                    if all(box and box["y"] >= 0 and box["y"] + box["height"] <= viewport["height"] for box in boxes):
-                        left = max(0, min(box["x"] for box in boxes) - 32)
-                        top = max(0, min(box["y"] for box in boxes) - 70)
-                        right = min(viewport["width"], max(box["x"] + box["width"] for box in boxes) + 32)
-                        bottom = min(viewport["height"], max(box["y"] + box["height"] for box in boxes) + 64)
-                        payment_png = page.screenshot(clip={"x": left, "y": top, "width": right - left,
-                                                            "height": bottom - top}, timeout=5000)
+                    payment_png = capture_payment_closeup(page, payment_inputs, profile)
             except Exception:
                 log.info("Payment detail capture unavailable for %s", demo_id)
             page.screenshot(path=str(screenshot_path), full_page=True, timeout=10000)
